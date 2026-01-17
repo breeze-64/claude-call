@@ -2,6 +2,8 @@
 
 Authorize Claude Code tool usage via Telegram buttons.
 
+English | [中文](./README.zh-CN.md)
+
 ## Features
 
 - **Telegram Integration**: Receive authorization requests as Telegram messages with inline buttons
