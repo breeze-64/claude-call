@@ -1,7 +1,7 @@
-import type { PendingRequest, SessionState } from "./types";
+import type { PendingRequest, SessionState, RequestType, QuestionOption } from "./types";
 
 /**
- * In-memory store for pending authorization requests
+ * In-memory store for pending requests
  */
 const pendingRequests = new Map<string, PendingRequest>();
 
@@ -21,9 +21,9 @@ const REQUEST_TIMEOUT = Number(process.env.AUTH_TIMEOUT_MS) || 30000;
 const SESSION_TTL = 60 * 60 * 1000;
 
 /**
- * Create a new pending request
+ * Create a new authorization request
  */
-export function createRequest(
+export function createAuthRequest(
   sessionId: string,
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -37,6 +37,34 @@ export function createRequest(
     cwd,
     createdAt: Date.now(),
     resolved: false,
+    type: "authorization",
+  };
+  pendingRequests.set(request.id, request);
+  return request;
+}
+
+/**
+ * Create a new question request
+ */
+export function createQuestionRequest(
+  sessionId: string,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  question: string,
+  options: QuestionOption[],
+  cwd?: string
+): PendingRequest {
+  const request: PendingRequest = {
+    id: crypto.randomUUID(),
+    sessionId,
+    toolName,
+    toolInput,
+    cwd,
+    createdAt: Date.now(),
+    resolved: false,
+    type: "question",
+    question,
+    options,
   };
   pendingRequests.set(request.id, request);
   return request;
@@ -50,18 +78,34 @@ export function getRequest(requestId: string): PendingRequest | undefined {
 }
 
 /**
- * Resolve a request with a decision
+ * Resolve an authorization request with a decision
  */
-export function resolveRequest(
+export function resolveAuthRequest(
   requestId: string,
   decision: "allow" | "deny"
 ): boolean {
   const request = pendingRequests.get(requestId);
-  if (!request || request.resolved) {
+  if (!request || request.resolved || request.type !== "authorization") {
     return false;
   }
   request.resolved = true;
   request.decision = decision;
+  return true;
+}
+
+/**
+ * Resolve a question request with selected option
+ */
+export function resolveQuestionRequest(
+  requestId: string,
+  selectedOption: string
+): boolean {
+  const request = pendingRequests.get(requestId);
+  if (!request || request.resolved || request.type !== "question") {
+    return false;
+  }
+  request.resolved = true;
+  request.selectedOption = selectedOption;
   return true;
 }
 

@@ -1,14 +1,21 @@
 import type { AuthorizeRequest, AuthorizeResponse, PollResponse } from "./types";
 import {
-  createRequest,
+  createAuthRequest,
+  createQuestionRequest,
   getRequest,
   isSessionAllowAll,
   isRequestTimedOut,
-  resolveRequest,
+  resolveAuthRequest,
   cleanupStale,
   getAllPendingRequests,
 } from "./store";
-import { sendAuthRequest, updateMessage, startPolling, sendTestMessage } from "./telegram";
+import {
+  sendAuthRequest,
+  sendQuestionRequest,
+  updateMessage,
+  startPolling,
+  sendTestMessage,
+} from "./telegram";
 
 const PORT = Number(process.env.AUTH_SERVER_PORT) || 3847;
 
@@ -42,12 +49,35 @@ async function handleAuthorize(req: Request): Promise<Response> {
     return jsonResponse({ error: "Invalid JSON" }, 400);
   }
 
-  const { sessionId, toolName, toolInput, cwd } = body;
+  const { sessionId, toolName, toolInput, cwd, type, question, options } = body;
 
   if (!sessionId || !toolName) {
     return jsonResponse({ error: "Missing required fields" }, 400);
   }
 
+  // Check if this is a question request
+  if (type === "question" && question && options) {
+    // Create question request
+    const request = createQuestionRequest(
+      sessionId,
+      toolName,
+      toolInput,
+      question,
+      options,
+      cwd
+    );
+
+    // Send Telegram message (don't await - let it run async)
+    sendQuestionRequest(request);
+
+    const response: AuthorizeResponse = {
+      requestId: request.id,
+      status: "pending",
+    };
+    return jsonResponse(response);
+  }
+
+  // Authorization request
   // Check if session has "Allow All" enabled
   if (isSessionAllowAll(sessionId)) {
     const response: AuthorizeResponse = {
@@ -59,7 +89,7 @@ async function handleAuthorize(req: Request): Promise<Response> {
   }
 
   // Create pending request
-  const request = createRequest(sessionId, toolName, toolInput, cwd);
+  const request = createAuthRequest(sessionId, toolName, toolInput, cwd);
 
   // Send Telegram message (don't await - let it run async)
   sendAuthRequest(request);
@@ -84,12 +114,16 @@ function handlePoll(requestId: string): Response {
 
   // Check timeout
   if (isRequestTimedOut(request) && !request.resolved) {
-    resolveRequest(requestId, "deny");
-    updateMessage(request, "⏱️ *Timeout - Denied*");
+    if (request.type === "authorization") {
+      resolveAuthRequest(requestId, "deny");
+      updateMessage(request, "⏱️ *Timeout - Denied*");
+    } else {
+      updateMessage(request, "⏱️ *Timeout*");
+    }
 
     const response: PollResponse = {
       status: "timeout",
-      decision: "deny",
+      decision: request.type === "authorization" ? "deny" : undefined,
       message: "Authorization timeout",
     };
     return jsonResponse(response);
@@ -99,6 +133,7 @@ function handlePoll(requestId: string): Response {
     const response: PollResponse = {
       status: "resolved",
       decision: request.decision,
+      selectedOption: request.selectedOption,
     };
     return jsonResponse(response);
   }
@@ -187,6 +222,7 @@ async function main() {
 ║          Claude-Call Authorization Server         ║
 ╠═══════════════════════════════════════════════════╣
 ║  Telegram Button Authorization for Claude Code    ║
+║  Now with multi-option question support!          ║
 ╚═══════════════════════════════════════════════════╝
 `);
 

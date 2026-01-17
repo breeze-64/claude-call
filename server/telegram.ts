@@ -2,10 +2,12 @@ import type {
   PendingRequest,
   TelegramUpdate,
   TelegramInlineKeyboard,
+  QuestionOption,
 } from "./types";
 import {
   getRequest,
-  resolveRequest,
+  resolveAuthRequest,
+  resolveQuestionRequest,
   setRequestMessageId,
   setSessionAllowAll,
   isRequestTimedOut,
@@ -70,9 +72,32 @@ ${details}`;
 }
 
 /**
+ * Format question message for Telegram
+ */
+function formatQuestionMessage(request: PendingRequest): string {
+  const sessionShort = request.sessionId.slice(0, 8);
+
+  let optionsText = "";
+  if (request.options && request.options.length > 0) {
+    optionsText = request.options
+      .map((opt, i) => {
+        const desc = opt.description ? `\n   ${opt.description}` : "";
+        return `*${opt.id}*. ${opt.label}${desc}`;
+      })
+      .join("\n\n");
+  }
+
+  return `❓ *${request.question || "请选择一个选项"}*
+
+🔑 Session: \`${sessionShort}...\`
+
+${optionsText}`;
+}
+
+/**
  * Create inline keyboard for authorization
  */
-function createKeyboard(requestId: string): TelegramInlineKeyboard {
+function createAuthKeyboard(requestId: string): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
       [
@@ -85,12 +110,42 @@ function createKeyboard(requestId: string): TelegramInlineKeyboard {
 }
 
 /**
+ * Create inline keyboard for question with dynamic options
+ */
+function createQuestionKeyboard(
+  requestId: string,
+  options: QuestionOption[]
+): TelegramInlineKeyboard {
+  // Create buttons, max 3 per row
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  let currentRow: Array<{ text: string; callback_data: string }> = [];
+
+  for (const opt of options) {
+    currentRow.push({
+      text: opt.label.length > 20 ? opt.label.slice(0, 18) + ".." : opt.label,
+      callback_data: `opt:${requestId}:${opt.id}`,
+    });
+
+    if (currentRow.length >= 2) {
+      rows.push(currentRow);
+      currentRow = [];
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return { inline_keyboard: rows };
+}
+
+/**
  * Send authorization request to Telegram
  */
 export async function sendAuthRequest(request: PendingRequest): Promise<void> {
   try {
     const message = formatAuthMessage(request);
-    const keyboard = createKeyboard(request.id);
+    const keyboard = createAuthKeyboard(request.id);
 
     const result = await callApi<{ message_id: number }>("sendMessage", {
       chat_id: CHAT_ID,
@@ -106,6 +161,27 @@ export async function sendAuthRequest(request: PendingRequest): Promise<void> {
 }
 
 /**
+ * Send question request to Telegram
+ */
+export async function sendQuestionRequest(request: PendingRequest): Promise<void> {
+  try {
+    const message = formatQuestionMessage(request);
+    const keyboard = createQuestionKeyboard(request.id, request.options || []);
+
+    const result = await callApi<{ message_id: number }>("sendMessage", {
+      chat_id: CHAT_ID,
+      text: message,
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+
+    setRequestMessageId(request.id, result.message_id);
+  } catch (error) {
+    console.error("Failed to send Telegram question:", error);
+  }
+}
+
+/**
  * Update message after decision
  */
 export async function updateMessage(
@@ -116,10 +192,19 @@ export async function updateMessage(
 
   try {
     const sessionShort = request.sessionId.slice(0, 8);
-    const text = `${statusText}
+    let text: string;
+
+    if (request.type === "question") {
+      text = `${statusText}
+
+❓ ${request.question || "选择"}
+🔑 Session: \`${sessionShort}...\``;
+    } else {
+      text = `${statusText}
 
 📋 Tool: \`${request.toolName}\`
 🔑 Session: \`${sessionShort}...\``;
+    }
 
     await callApi("editMessageText", {
       chat_id: CHAT_ID,
@@ -163,7 +248,43 @@ export async function processCallback(
     return;
   }
 
-  const [action, requestId] = callbackQuery.data.split(":");
+  const data = callbackQuery.data;
+
+  // Handle option selection (format: opt:requestId:optionId)
+  if (data.startsWith("opt:")) {
+    const parts = data.split(":");
+    const requestId = parts[1];
+    const optionId = parts.slice(2).join(":"); // Option ID might contain ":"
+
+    const request = getRequest(requestId);
+    if (!request) {
+      await answerCallbackQuery(callbackQuery.id, "Request not found");
+      return;
+    }
+
+    if (request.resolved) {
+      await answerCallbackQuery(callbackQuery.id, "Already answered");
+      return;
+    }
+
+    if (isRequestTimedOut(request)) {
+      await updateMessage(request, "⏱️ *Timeout*");
+      await answerCallbackQuery(callbackQuery.id, "Request timed out");
+      return;
+    }
+
+    // Find the selected option
+    const selectedOption = request.options?.find((o) => o.id === optionId);
+    const optionLabel = selectedOption?.label || optionId;
+
+    resolveQuestionRequest(requestId, optionId);
+    await updateMessage(request, `✅ *已选择: ${optionLabel}*`);
+    await answerCallbackQuery(callbackQuery.id, `选择: ${optionLabel}`);
+    return;
+  }
+
+  // Handle authorization (format: action:requestId)
+  const [action, requestId] = data.split(":");
   const request = getRequest(requestId);
 
   if (!request) {
@@ -178,7 +299,7 @@ export async function processCallback(
 
   // Check timeout
   if (isRequestTimedOut(request)) {
-    resolveRequest(requestId, "deny");
+    resolveAuthRequest(requestId, "deny");
     await updateMessage(request, "⏱️ *Timeout - Denied*");
     await answerCallbackQuery(callbackQuery.id, "Request timed out");
     return;
@@ -207,7 +328,7 @@ export async function processCallback(
       return;
   }
 
-  resolveRequest(requestId, decision);
+  resolveAuthRequest(requestId, decision);
   await updateMessage(request, statusText);
   await answerCallbackQuery(callbackQuery.id, decision === "allow" ? "Allowed" : "Denied");
 }
