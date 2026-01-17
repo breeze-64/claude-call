@@ -1,0 +1,14 @@
+{
+  "name": "claude-call",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Telegram button authorization for Claude Code",
+  "scripts": {
+    "start": "bun run server/index.ts",
+    "dev": "bun --watch run server/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

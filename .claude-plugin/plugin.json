@@ -1,0 +1,22 @@
+{
+  "name": "claude-call",
+  "description": "Authorize Claude Code tool usage via Telegram buttons",
+  "version": "1.0.0",
+  "author": {
+    "name": "User"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/telegram-auth.ts",
+            "timeout": 35000
+          }
+        ]
+      }
+    ]
+  }
+}
