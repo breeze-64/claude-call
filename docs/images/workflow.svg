@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420">
   <defs>
     <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#1a1a2e"/>
@@ -21,68 +21,68 @@
   </defs>
 
   <!-- Background -->
-  <rect width="800" height="440" fill="url(#bgGrad)"/>
+  <rect width="800" height="420" fill="url(#bgGrad)"/>
 
   <!-- Title -->
   <text x="400" y="35" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="24" font-weight="bold">Claude-Call Workflow</text>
   <text x="400" y="58" text-anchor="middle" fill="#888" font-family="Arial, sans-serif" font-size="14">Authorize Claude Code from your phone</text>
 
-  <!-- Step labels at the top -->
-  <text x="250" y="90" fill="#0088cc" font-family="Arial" font-size="12" text-anchor="middle" font-weight="bold">1. Request →</text>
-  <text x="550" y="90" fill="#0088cc" font-family="Arial" font-size="12" text-anchor="middle" font-weight="bold">2. Notify →</text>
-
   <!-- Claude Code Box -->
-  <rect x="40" y="110" width="180" height="180" rx="12" fill="#1e1e1e" stroke="url(#claudeGrad)" stroke-width="2"/>
-  <rect x="40" y="110" width="180" height="35" rx="12" fill="url(#claudeGrad)"/>
-  <circle cx="60" cy="127" r="6" fill="#ff5f56"/>
-  <circle cx="80" cy="127" r="6" fill="#ffbd2e"/>
-  <circle cx="100" cy="127" r="6" fill="#27ca3f"/>
-  <text x="135" y="133" fill="#000" font-family="monospace" font-size="12" font-weight="bold">Claude Code</text>
+  <rect x="40" y="95" width="180" height="180" rx="12" fill="#1e1e1e" stroke="url(#claudeGrad)" stroke-width="2"/>
+  <rect x="40" y="95" width="180" height="35" rx="12" fill="url(#claudeGrad)"/>
+  <circle cx="60" cy="112" r="6" fill="#ff5f56"/>
+  <circle cx="80" cy="112" r="6" fill="#ffbd2e"/>
+  <circle cx="100" cy="112" r="6" fill="#27ca3f"/>
+  <text x="135" y="118" fill="#000" font-family="monospace" font-size="12" font-weight="bold">Claude Code</text>
 
   <!-- Terminal content -->
-  <text x="55" y="165" fill="#4ade80" font-family="monospace" font-size="11">❯ claude</text>
-  <text x="55" y="185" fill="#888" font-family="monospace" font-size="10">Executing: rm -rf temp/</text>
-  <text x="55" y="205" fill="#f59e0b" font-family="monospace" font-size="10">⏳ Waiting for approval...</text>
-  <text x="55" y="235" fill="#4ade80" font-family="monospace" font-size="10">✓ Approved via Telegram</text>
-  <text x="55" y="255" fill="#888" font-family="monospace" font-size="10">Continuing execution...</text>
+  <text x="55" y="150" fill="#4ade80" font-family="monospace" font-size="11">❯ claude</text>
+  <text x="55" y="170" fill="#888" font-family="monospace" font-size="10">Executing: rm -rf temp/</text>
+  <text x="55" y="190" fill="#f59e0b" font-family="monospace" font-size="10">⏳ Waiting for approval...</text>
+  <text x="55" y="220" fill="#4ade80" font-family="monospace" font-size="10">✓ Approved via Telegram</text>
+  <text x="55" y="240" fill="#888" font-family="monospace" font-size="10">Continuing execution...</text>
 
+  <!-- Label 1 above arrow -->
+  <text x="260" y="175" fill="#0088cc" font-family="Arial" font-size="11" text-anchor="middle" font-weight="bold">1. Request</text>
   <!-- Arrow 1: Claude Code -> Auth Server -->
-  <path d="M 225 200 L 295 200" fill="none" stroke="#0088cc" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <path d="M 225 190 L 295 190" fill="none" stroke="#0088cc" stroke-width="3" marker-end="url(#arrowBlue)"/>
 
   <!-- Server Box -->
-  <rect x="310" y="140" width="180" height="130" rx="12" fill="#2d2d2d" stroke="#6366f1" stroke-width="2"/>
-  <text x="400" y="170" text-anchor="middle" fill="#fff" font-family="Arial" font-size="14" font-weight="bold">Auth Server</text>
-  <text x="400" y="192" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">localhost:3847</text>
-  <rect x="340" y="205" width="120" height="25" rx="5" fill="#3b3b3b"/>
-  <text x="400" y="222" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="10">● Running</text>
-  <text x="400" y="255" text-anchor="middle" fill="#666" font-family="Arial" font-size="10">Bun + TypeScript</text>
+  <rect x="310" y="125" width="180" height="130" rx="12" fill="#2d2d2d" stroke="#6366f1" stroke-width="2"/>
+  <text x="400" y="155" text-anchor="middle" fill="#fff" font-family="Arial" font-size="14" font-weight="bold">Auth Server</text>
+  <text x="400" y="177" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">localhost:3847</text>
+  <rect x="340" y="190" width="120" height="25" rx="5" fill="#3b3b3b"/>
+  <text x="400" y="207" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="10">● Running</text>
+  <text x="400" y="240" text-anchor="middle" fill="#666" font-family="Arial" font-size="10">Bun + TypeScript</text>
 
+  <!-- Label 2 above arrow -->
+  <text x="540" y="175" fill="#0088cc" font-family="Arial" font-size="11" text-anchor="middle" font-weight="bold">2. Notify</text>
   <!-- Arrow 2: Auth Server -> Telegram -->
-  <path d="M 495 200 L 565 200" fill="none" stroke="#0088cc" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <path d="M 495 190 L 565 190" fill="none" stroke="#0088cc" stroke-width="3" marker-end="url(#arrowBlue)"/>
 
   <!-- Telegram Box -->
-  <rect x="580" y="110" width="180" height="180" rx="12" fill="#1a1a2e" stroke="url(#telegramGrad)" stroke-width="2"/>
-  <rect x="580" y="110" width="180" height="35" rx="12" fill="url(#telegramGrad)"/>
-  <text x="670" y="133" fill="#fff" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">📱 Telegram</text>
+  <rect x="580" y="95" width="180" height="180" rx="12" fill="#1a1a2e" stroke="url(#telegramGrad)" stroke-width="2"/>
+  <rect x="580" y="95" width="180" height="35" rx="12" fill="url(#telegramGrad)"/>
+  <text x="670" y="118" fill="#fff" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">📱 Telegram</text>
 
   <!-- Telegram message mockup -->
-  <rect x="595" y="158" width="150" height="65" rx="8" fill="#2b5278"/>
-  <text x="605" y="176" fill="#fff" font-family="Arial" font-size="10">🔐 Tool Authorization</text>
-  <text x="605" y="193" fill="#aaa" font-family="monospace" font-size="9">Bash: rm -rf temp/</text>
-  <rect x="605" y="200" width="55" height="16" rx="4" fill="#4ade80"/>
-  <text x="632" y="212" text-anchor="middle" fill="#000" font-family="Arial" font-size="9" font-weight="bold">✓ Allow</text>
-  <rect x="670" y="200" width="55" height="16" rx="4" fill="#ef4444"/>
-  <text x="697" y="212" text-anchor="middle" fill="#fff" font-family="Arial" font-size="9" font-weight="bold">✗ Deny</text>
+  <rect x="595" y="143" width="150" height="65" rx="8" fill="#2b5278"/>
+  <text x="605" y="161" fill="#fff" font-family="Arial" font-size="10">🔐 Tool Authorization</text>
+  <text x="605" y="178" fill="#aaa" font-family="monospace" font-size="9">Bash: rm -rf temp/</text>
+  <rect x="605" y="185" width="55" height="16" rx="4" fill="#4ade80"/>
+  <text x="632" y="197" text-anchor="middle" fill="#000" font-family="Arial" font-size="9" font-weight="bold">✓ Allow</text>
+  <rect x="670" y="185" width="55" height="16" rx="4" fill="#ef4444"/>
+  <text x="697" y="197" text-anchor="middle" fill="#fff" font-family="Arial" font-size="9" font-weight="bold">✗ Deny</text>
 
   <!-- User icon -->
-  <circle cx="670" cy="255" r="18" fill="#374151"/>
-  <text x="670" y="261" text-anchor="middle" fill="#fff" font-size="18">👤</text>
-  <text x="670" y="282" text-anchor="middle" fill="#888" font-family="Arial" font-size="10">You</text>
+  <circle cx="670" cy="240" r="18" fill="#374151"/>
+  <text x="670" y="246" text-anchor="middle" fill="#fff" font-size="18">👤</text>
+  <text x="670" y="267" text-anchor="middle" fill="#888" font-family="Arial" font-size="10">You</text>
 
   <!-- Arrow 3 (return): curved line at bottom -->
-  <path d="M 580 300 Q 400 360 220 300" fill="none" stroke="#4ade80" stroke-width="3" stroke-dasharray="5,5" marker-end="url(#arrowGreen)"/>
-  <text x="400" y="355" fill="#4ade80" font-family="Arial" font-size="12" text-anchor="middle" font-weight="bold">3. Decision returned</text>
+  <path d="M 580 285 Q 400 345 220 285" fill="none" stroke="#4ade80" stroke-width="3" stroke-dasharray="5,5" marker-end="url(#arrowGreen)"/>
+  <text x="400" y="340" fill="#4ade80" font-family="Arial" font-size="12" text-anchor="middle" font-weight="bold">3. Decision returned</text>
 
   <!-- Bottom tagline -->
-  <text x="400" y="415" text-anchor="middle" fill="#888" font-family="Arial" font-size="12">Approve from anywhere • No VPN needed • Works on mobile</text>
+  <text x="400" y="395" text-anchor="middle" fill="#888" font-family="Arial" font-size="12">Approve from anywhere • No VPN needed • Works on mobile</text>
 </svg>
