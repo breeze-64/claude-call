@@ -1,7 +1,7 @@
 {
   "name": "claude-call",
   "version": "1.1.0",
-  "description": "Remote control Claude Code via Telegram - tool authorization, question answering, and task injection",
+  "description": "Remote control Claude Code via Telegram - 10x productivity boost for AI coding | 通过Telegram远程控制Claude Code - AI编程效率提升10倍",
   "keywords": [
     "claude",
     "claude-code",
@@ -9,14 +9,22 @@
     "telegram-bot",
     "anthropic",
     "ai",
+    "ai-coding",
     "automation",
     "tool-authorization",
     "remote-control",
+    "productivity",
+    "efficiency",
     "cli",
     "bun",
     "typescript",
     "tmux",
-    "pty"
+    "pty",
+    "效率工具",
+    "远程控制",
+    "AI编程",
+    "提效神器",
+    "自动化"
   ],
   "author": "Claude-Call Contributors",
   "license": "MIT",

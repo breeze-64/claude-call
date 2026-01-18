@@ -1,6 +1,8 @@
 # Claude-Call
 
-> **通过 Telegram 远程控制 Claude Code** - 授权工具执行、回答问题、注入新任务，全部通过手机完成。
+> **通过 Telegram 远程控制 Claude Code** - 手机授权、回答问题、注入任务。**编程效率提升10倍**。
+>
+> **Remote control Claude Code via Telegram** - Authorize tool execution, answer questions, and inject tasks from your phone. **10x productivity boost**.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
@@ -9,7 +11,14 @@
 
 [Claude Code](https://claude.ai/code)（Anthropic 官方 CLI 工具）的完整 Telegram 集成。授权工具、回答问题、发送新任务，全部通过手机完成。
 
-**关键词**: Claude Code, Telegram 机器人, 工具授权, 远程控制, AI 助手, Anthropic, CLI 集成, PreToolUse Hook, PTY Wrapper, tmux
+## 为什么选择 Claude-Call? | Why Claude-Call?
+
+- **移动办公，效率不减** | **Stay Mobile, Stay Productive** - 随时随地审批 Claude 的操作 - 开会、通勤、喝咖啡时都能处理
+- **告别等待** | **No More Waiting** - Claude 持续工作，你用手机随时审批
+- **多任务处理** | **Multi-task Like a Pro** - 运行多个 Claude 会话，一个聊天窗口全部控制
+- **零切换成本** | **Zero Context Switch** - 简单的是/否决定，无需回到电脑前
+
+**关键词 | Keywords**: Claude Code, Telegram 机器人, 工具授权, 远程控制, AI 助手, Anthropic, CLI 集成, AI编程, 效率工具, 提效神器, Productivity, Automation, AI Coding
 
 [English](./README.md) | 中文
 
