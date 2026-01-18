@@ -74,6 +74,175 @@ const SKIP_TOOLS = new Set([
 ]);
 
 /**
+ * Claude Code settings structure
+ */
+interface ClaudeSettings {
+  permissions?: {
+    allow?: string[];
+    deny?: string[];
+  };
+}
+
+/**
+ * Read Claude Code settings from global and project-level config
+ */
+async function readClaudeSettings(cwd?: string): Promise<ClaudeSettings> {
+  const settings: ClaudeSettings = { permissions: { allow: [], deny: [] } };
+
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  const globalSettingsPath = `${homeDir}/.claude/settings.json`;
+  const projectSettingsPath = cwd ? `${cwd}/.claude/settings.json` : null;
+
+  // Read global settings
+  try {
+    const file = Bun.file(globalSettingsPath);
+    if (await file.exists()) {
+      const globalSettings: ClaudeSettings = await file.json();
+      if (globalSettings.permissions?.allow) {
+        settings.permissions!.allow = globalSettings.permissions.allow;
+      }
+      if (globalSettings.permissions?.deny) {
+        settings.permissions!.deny = globalSettings.permissions.deny;
+      }
+    }
+  } catch {
+    // Ignore errors reading global settings
+  }
+
+  // Read project settings (merge with global)
+  if (projectSettingsPath) {
+    try {
+      const file = Bun.file(projectSettingsPath);
+      if (await file.exists()) {
+        const projectSettings: ClaudeSettings = await file.json();
+        if (projectSettings.permissions?.allow) {
+          settings.permissions!.allow = [
+            ...settings.permissions!.allow!,
+            ...projectSettings.permissions.allow,
+          ];
+        }
+        if (projectSettings.permissions?.deny) {
+          settings.permissions!.deny = [
+            ...settings.permissions!.deny!,
+            ...projectSettings.permissions.deny,
+          ];
+        }
+      }
+    } catch {
+      // Ignore errors reading project settings
+    }
+  }
+
+  return settings;
+}
+
+/**
+ * Check if a permission pattern matches the current tool call
+ *
+ * Pattern formats:
+ * - "Bash(npm :*)" - Bash tool with command starting with "npm "
+ * - "Write(**)" - All Write operations
+ * - "Edit(src/**)" - Edit operations on files in src/
+ */
+function matchesPermissionPattern(
+  pattern: string,
+  toolName: string,
+  toolInput: Record<string, unknown>
+): boolean {
+  // Parse pattern: "ToolName(arg)"
+  const match = pattern.match(/^(\w+)\((.+)\)$/);
+  if (!match) {
+    // Simple tool name match (e.g., "Bash")
+    return pattern === toolName;
+  }
+
+  const [, patternTool, patternArg] = match;
+
+  // Tool name must match
+  if (patternTool !== toolName) {
+    return false;
+  }
+
+  // Handle different tools
+  if (toolName === "Bash") {
+    const command = toolInput.command as string | undefined;
+    if (!command) return false;
+
+    // Pattern like "npm :*" means command starts with "npm "
+    if (patternArg.endsWith(" :*")) {
+      const prefix = patternArg.slice(0, -3); // Remove " :*"
+      return command.startsWith(prefix + " ") || command === prefix;
+    }
+
+    // Pattern like "npm*" means command starts with "npm"
+    if (patternArg.endsWith("*")) {
+      const prefix = patternArg.slice(0, -1);
+      return command.startsWith(prefix);
+    }
+
+    // Exact match
+    return command === patternArg;
+  }
+
+  if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
+    const filePath = toolInput.file_path as string | undefined;
+    if (!filePath) return false;
+
+    // "**" matches everything
+    if (patternArg === "**") {
+      return true;
+    }
+
+    // "src/**" matches files under src/
+    if (patternArg.endsWith("/**")) {
+      const prefix = patternArg.slice(0, -3);
+      return filePath.startsWith(prefix + "/") || filePath === prefix;
+    }
+
+    // Glob-like matching with *
+    if (patternArg.includes("*")) {
+      const regex = new RegExp(
+        "^" + patternArg.replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*") + "$"
+      );
+      return regex.test(filePath);
+    }
+
+    // Exact match
+    return filePath === patternArg;
+  }
+
+  // For other tools, just check if pattern allows all ("**")
+  return patternArg === "**";
+}
+
+/**
+ * Check if tool call is already allowed by Claude Code's allowedTools config
+ */
+async function isAlreadyAllowed(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  cwd?: string
+): Promise<boolean> {
+  const settings = await readClaudeSettings(cwd);
+
+  // Check deny patterns first (deny takes precedence)
+  for (const pattern of settings.permissions?.deny || []) {
+    if (matchesPermissionPattern(pattern, toolName, toolInput)) {
+      return false; // Explicitly denied
+    }
+  }
+
+  // Check allow patterns
+  for (const pattern of settings.permissions?.allow || []) {
+    if (matchesPermissionPattern(pattern, toolName, toolInput)) {
+      return true; // Matches an allow pattern
+    }
+  }
+
+  return false;
+}
+
+/**
  * Output decision and exit
  *
  * According to Claude Code hook docs:
@@ -194,6 +363,20 @@ async function main() {
   // Skip safe tools
   if (tool_name && SKIP_TOOLS.has(tool_name)) {
     return outputDecision("allow");
+  }
+
+  // Check if already allowed by Claude Code's allowedTools config
+  if (tool_name && tool_name !== "AskUserQuestion") {
+    try {
+      const alreadyAllowed = await isAlreadyAllowed(tool_name, tool_input, cwd);
+      if (alreadyAllowed) {
+        console.error(`[claude-call] Tool ${tool_name} already allowed by Claude Code config, skipping Telegram`);
+        return outputDecision("allow", "Auto-approved (allowedTools config)");
+      }
+    } catch (error) {
+      console.error(`[claude-call] Error checking allowedTools: ${error}`);
+      // Continue to normal flow if check fails
+    }
   }
 
   try {
