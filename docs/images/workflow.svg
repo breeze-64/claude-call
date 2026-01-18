@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <linearGradient id="telegramGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0088cc"/>
+      <stop offset="100%" style="stop-color:#00aaff"/>
+    </linearGradient>
+    <linearGradient id="claudeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#d97706"/>
+      <stop offset="100%" style="stop-color:#f59e0b"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="400" fill="url(#bgGrad)"/>
+
+  <!-- Title -->
+  <text x="400" y="45" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="24" font-weight="bold">Claude-Call Workflow</text>
+  <text x="400" y="70" text-anchor="middle" fill="#888" font-family="Arial, sans-serif" font-size="14">Authorize Claude Code from your phone</text>
+
+  <!-- Claude Code Box -->
+  <rect x="50" y="120" width="180" height="200" rx="12" fill="#1e1e1e" stroke="url(#claudeGrad)" stroke-width="2"/>
+  <rect x="50" y="120" width="180" height="35" rx="12" fill="url(#claudeGrad)"/>
+  <circle cx="70" cy="137" r="6" fill="#ff5f56"/>
+  <circle cx="90" cy="137" r="6" fill="#ffbd2e"/>
+  <circle cx="110" cy="137" r="6" fill="#27ca3f"/>
+  <text x="140" y="143" fill="#000" font-family="monospace" font-size="12" font-weight="bold">Claude Code</text>
+
+  <!-- Terminal content -->
+  <text x="65" y="175" fill="#4ade80" font-family="monospace" font-size="11">❯ claude</text>
+  <text x="65" y="195" fill="#888" font-family="monospace" font-size="10">Executing: rm -rf temp/</text>
+  <text x="65" y="215" fill="#f59e0b" font-family="monospace" font-size="10">⏳ Waiting for approval...</text>
+  <text x="65" y="245" fill="#4ade80" font-family="monospace" font-size="10">✓ Approved via Telegram</text>
+  <text x="65" y="265" fill="#888" font-family="monospace" font-size="10">Continuing execution...</text>
+
+  <!-- Arrow 1 -->
+  <path d="M 240 220 Q 290 180 340 200" fill="none" stroke="#0088cc" stroke-width="3" marker-end="url(#arrowhead)"/>
+  <text x="290" y="175" fill="#0088cc" font-family="Arial" font-size="11" text-anchor="middle">1. Request</text>
+
+  <!-- Server Box -->
+  <rect x="310" y="150" width="180" height="140" rx="12" fill="#2d2d2d" stroke="#6366f1" stroke-width="2"/>
+  <text x="400" y="180" text-anchor="middle" fill="#fff" font-family="Arial" font-size="14" font-weight="bold">Auth Server</text>
+  <text x="400" y="205" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">localhost:3847</text>
+  <rect x="340" y="220" width="120" height="25" rx="5" fill="#3b3b3b"/>
+  <text x="400" y="237" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="10">● Running</text>
+  <text x="400" y="270" text-anchor="middle" fill="#666" font-family="Arial" font-size="10">Bun + TypeScript</text>
+
+  <!-- Arrow 2 -->
+  <path d="M 500 220 Q 550 180 600 200" fill="none" stroke="#0088cc" stroke-width="3"/>
+  <text x="550" y="175" fill="#0088cc" font-family="Arial" font-size="11" text-anchor="middle">2. Notify</text>
+
+  <!-- Telegram Box -->
+  <rect x="570" y="120" width="180" height="200" rx="12" fill="#1a1a2e" stroke="url(#telegramGrad)" stroke-width="2"/>
+  <rect x="570" y="120" width="180" height="35" rx="12" fill="url(#telegramGrad)"/>
+  <text x="660" y="143" fill="#fff" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">📱 Telegram</text>
+
+  <!-- Telegram message mockup -->
+  <rect x="585" y="170" width="150" height="70" rx="8" fill="#2b5278"/>
+  <text x="595" y="188" fill="#fff" font-family="Arial" font-size="10">🔐 Tool Authorization</text>
+  <text x="595" y="205" fill="#aaa" font-family="monospace" font-size="9">Bash: rm -rf temp/</text>
+  <rect x="595" y="215" width="60" height="18" rx="4" fill="#4ade80"/>
+  <text x="625" y="228" text-anchor="middle" fill="#000" font-family="Arial" font-size="9" font-weight="bold">✓ Allow</text>
+  <rect x="665" y="215" width="60" height="18" rx="4" fill="#ef4444"/>
+  <text x="695" y="228" text-anchor="middle" fill="#fff" font-family="Arial" font-size="9" font-weight="bold">✗ Deny</text>
+
+  <!-- User icon -->
+  <circle cx="660" cy="280" r="20" fill="#374151"/>
+  <text x="660" y="287" text-anchor="middle" fill="#fff" font-size="20">👤</text>
+  <text x="660" y="310" text-anchor="middle" fill="#888" font-family="Arial" font-size="10">You</text>
+
+  <!-- Arrow 3 (return) -->
+  <path d="M 560 260 Q 400 320 250 260" fill="none" stroke="#4ade80" stroke-width="3" stroke-dasharray="5,5"/>
+  <text x="400" y="340" fill="#4ade80" font-family="Arial" font-size="11" text-anchor="middle">3. Decision returned</text>
+
+  <!-- Bottom tagline -->
+  <text x="400" y="380" text-anchor="middle" fill="#666" font-family="Arial" font-size="12">Approve from anywhere • No VPN needed • Works on mobile</text>
+</svg>

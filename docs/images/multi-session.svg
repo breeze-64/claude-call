@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 350">
+  <defs>
+    <linearGradient id="darkBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="350" fill="url(#darkBg)"/>
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="20" font-weight="bold">Multi-Session Management | 多会话管理</text>
+
+  <!-- Terminal 1 -->
+  <rect x="30" y="60" width="230" height="130" rx="8" fill="#1e1e1e" stroke="#4ade80" stroke-width="2"/>
+  <rect x="30" y="60" width="230" height="25" rx="8" fill="#2d2d2d"/>
+  <circle cx="48" cy="72" r="5" fill="#ff5f56"/>
+  <circle cx="63" cy="72" r="5" fill="#ffbd2e"/>
+  <circle cx="78" cy="72" r="5" fill="#27ca3f"/>
+  <text x="145" y="77" text-anchor="middle" fill="#888" font-family="monospace" font-size="10">Terminal 1</text>
+
+  <text x="45" y="105" fill="#4ade80" font-family="monospace" font-size="10">❯ bun run claude</text>
+  <text x="45" y="122" fill="#888" font-family="monospace" font-size="9">Session: claude-abc123</text>
+  <text x="45" y="139" fill="#f59e0b" font-family="monospace" font-size="9">Working on: API refactor</text>
+  <text x="45" y="156" fill="#4ade80" font-family="monospace" font-size="9">● Active</text>
+
+  <!-- Terminal 2 -->
+  <rect x="285" y="60" width="230" height="130" rx="8" fill="#1e1e1e" stroke="#0ea5e9" stroke-width="2"/>
+  <rect x="285" y="60" width="230" height="25" rx="8" fill="#2d2d2d"/>
+  <circle cx="303" cy="72" r="5" fill="#ff5f56"/>
+  <circle cx="318" cy="72" r="5" fill="#ffbd2e"/>
+  <circle cx="333" cy="72" r="5" fill="#27ca3f"/>
+  <text x="400" y="77" text-anchor="middle" fill="#888" font-family="monospace" font-size="10">Terminal 2</text>
+
+  <text x="300" y="105" fill="#4ade80" font-family="monospace" font-size="10">❯ bun run claude</text>
+  <text x="300" y="122" fill="#888" font-family="monospace" font-size="9">Session: claude-def456</text>
+  <text x="300" y="139" fill="#0ea5e9" font-family="monospace" font-size="9">Working on: Bug fixes</text>
+  <text x="300" y="156" fill="#4ade80" font-family="monospace" font-size="9">● Active</text>
+
+  <!-- Terminal 3 -->
+  <rect x="540" y="60" width="230" height="130" rx="8" fill="#1e1e1e" stroke="#a855f7" stroke-width="2"/>
+  <rect x="540" y="60" width="230" height="25" rx="8" fill="#2d2d2d"/>
+  <circle cx="558" cy="72" r="5" fill="#ff5f56"/>
+  <circle cx="573" cy="72" r="5" fill="#ffbd2e"/>
+  <circle cx="588" cy="72" r="5" fill="#27ca3f"/>
+  <text x="655" y="77" text-anchor="middle" fill="#888" font-family="monospace" font-size="10">Terminal 3</text>
+
+  <text x="555" y="105" fill="#4ade80" font-family="monospace" font-size="10">❯ bun run claude</text>
+  <text x="555" y="122" fill="#888" font-family="monospace" font-size="9">Session: claude-ghi789</text>
+  <text x="555" y="139" fill="#a855f7" font-family="monospace" font-size="9">Working on: Tests</text>
+  <text x="555" y="156" fill="#4ade80" font-family="monospace" font-size="9">● Active</text>
+
+  <!-- Arrows down -->
+  <path d="M 145 195 L 145 210 L 400 210 L 400 235" fill="none" stroke="#666" stroke-width="2"/>
+  <path d="M 400 195 L 400 235" fill="none" stroke="#666" stroke-width="2"/>
+  <path d="M 655 195 L 655 210 L 400 210" fill="none" stroke="#666" stroke-width="2"/>
+
+  <!-- Telegram Phone -->
+  <rect x="320" y="235" width="160" height="100" rx="12" fill="#17212b" stroke="#0088cc" stroke-width="2"/>
+  <text x="400" y="260" text-anchor="middle" fill="#fff" font-family="Arial" font-size="12" font-weight="bold">📱 Telegram</text>
+
+  <text x="335" y="280" fill="#888" font-family="Arial" font-size="9">Select session:</text>
+
+  <rect x="335" y="288" width="130" height="18" rx="4" fill="#2b5278"/>
+  <text x="400" y="301" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="9">📱 claude-abc123</text>
+
+  <rect x="335" y="310" width="130" height="18" rx="4" fill="#2b5278"/>
+  <text x="400" y="323" text-anchor="middle" fill="#0ea5e9" font-family="monospace" font-size="9">📱 claude-def456</text>
+
+  <!-- Bottom text -->
+  <text x="400" y="338" text-anchor="middle" fill="#666" font-family="Arial" font-size="11">One Telegram chat controls all sessions | 一个聊天窗口控制所有会话</text>
+</svg>
