@@ -18,10 +18,16 @@ English | [中文](./README.zh-CN.md)
 - **Custom Input**: Reply to question messages with free-form text
 - **Rich Formatting**: See question context and option descriptions
 
-### Remote Task Injection (New!)
+### Remote Task Injection
 - **Send Tasks from Telegram**: Start new Claude tasks by sending messages
 - **PTY Wrapper**: Uses tmux for reliable terminal integration
 - **Queue System**: Tasks are queued and processed in order
+
+### Multi-Session Management
+- **Session Registry**: Each `bun run claude` instance registers as a unique session
+- **Session Selection**: Choose target session when multiple are active
+- **Direct Targeting**: Use `@shortId` prefix to send to specific session
+- **Session Commands**: `/sessions` to list all active sessions
 
 ## Architecture
 
@@ -38,10 +44,10 @@ English | [中文](./README.zh-CN.md)
 │         │                     │                      │         │
 │         ▼                     ▼                      ▼         │
 │  ┌──────────────┐     ┌─────────────────┐     ┌────────────┐  │
-│  │  Button      │     │  Task Queue     │     │  PTY       │  │
-│  │  Callbacks   │     │  Management     │     │  Wrapper   │  │
-│  └──────────────┘     └─────────────────┘     │  (tmux)    │  │
-│         │                     │               └────────────┘  │
+│  │  Button      │     │  Session        │     │  PTY       │  │
+│  │  Callbacks   │     │  Registry &     │     │  Wrapper   │  │
+│  └──────────────┘     │  Task Queues    │     │  (tmux)    │  │
+│         │             └─────────────────┘     └────────────┘  │
 │         └─────────────────────┴───────────────────────┘       │
 │                              │                                 │
 │                    Telegram Long Polling                       │
@@ -54,7 +60,9 @@ English | [中文](./README.zh-CN.md)
 |----------------------|---------|---------|
 | Button callback (`callback_query`) | `processCallback()` | Tool authorization decisions |
 | Reply to bot message | `processReplyMessage()` | Custom text input for questions |
+| `/sessions` command | `processSessionsCommand()` | List all active sessions |
 | Plain text message | `processNewTaskMessage()` | New task for PTY injection |
+| `@shortId message` | `processNewTaskMessage()` | Task to specific session |
 
 ### Data Flow
 
@@ -178,12 +186,29 @@ Now you can:
 2. **Answer questions** by clicking options or replying with text
 3. **Send new tasks** by sending plain messages to the bot
 
+### Multi-Session Usage
+
+Run multiple Claude instances in different terminals:
+
+```bash
+# Terminal A
+bun run claude  # Registers as session e.g. "claude-abc123" (shortId: abc12345)
+
+# Terminal B
+bun run claude  # Registers as session e.g. "claude-def456" (shortId: def45678)
+```
+
+From Telegram:
+- **List sessions**: Send `/sessions` to see all active sessions
+- **Direct target**: Send `@abc12345 your task here` to target specific session
+- **Auto-select**: When multiple sessions exist, bot shows selection buttons
+
 ### tmux Controls
 
 Since the PTY wrapper uses tmux:
 - **Scroll up**: `Ctrl+b` then `[`, use arrow keys, `q` to exit
 - **Detach**: `Ctrl+b` then `d`
-- **Reattach**: `tmux attach -t claude-call`
+- **Reattach**: `tmux attach -t <session-name>`
 
 ## API Reference
 
@@ -193,7 +218,10 @@ Since the PTY wrapper uses tmux:
 |----------|--------|-------------|
 | `POST /authorize` | Submit authorization or question request |
 | `GET /poll/:id` | Poll for request decision |
-| `GET /tasks/pending` | Get pending tasks for PTY injection |
+| `GET /sessions` | List all active sessions |
+| `POST /sessions/register` | Register a new PTY session |
+| `POST /sessions/:id/unregister` | Unregister a PTY session |
+| `GET /tasks/pending/:sessionId` | Get pending tasks for a session |
 | `POST /tasks/:id/ack` | Acknowledge task as processed |
 | `GET /tasks/stats` | Task queue statistics |
 | `GET /health` | Health check |

@@ -2,34 +2,80 @@
 /**
  * PTY Wrapper for Claude Code using tmux
  *
- * Uses tmux for reliable task injection:
- * 1. Creates a tmux session running claude
- * 2. Attaches to the session (user sees claude interface)
- * 3. Uses `tmux send-keys` to inject tasks from Telegram
- *
- * This is the most reliable approach - tmux is battle-tested.
+ * Features:
+ * 1. Registers a unique session with the server
+ * 2. Creates a tmux session with unique name
+ * 3. Polls for tasks specific to this session
+ * 4. Uses `tmux send-keys` to inject tasks from Telegram
+ * 5. Unregisters session on exit
  */
 
 import { $ } from "bun";
 
 const SERVER_URL = process.env.CLAUDE_CALL_SERVER_URL || "http://localhost:3847";
 const POLL_INTERVAL = 1000;
-const SESSION_NAME = "claude-call";
 
 interface PendingTask {
   id: string;
+  sessionId: string;
   message: string;
   createdAt: number;
 }
 
+interface Session {
+  id: string;
+  shortId: string;
+  name: string;
+  cwd: string;
+}
+
 let isShuttingDown = false;
+let currentSession: Session | null = null;
 
 /**
- * Fetch pending tasks from server
+ * Register a new session with the server
  */
-async function fetchPendingTasks(): Promise<PendingTask[]> {
+async function registerSession(): Promise<Session | null> {
   try {
-    const response = await fetch(`${SERVER_URL}/tasks/pending`, {
+    const response = await fetch(`${SERVER_URL}/sessions/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `claude-${Date.now().toString(36)}`,
+        cwd: process.cwd(),
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data.session;
+    }
+  } catch (error) {
+    console.error("[PTY] Failed to register session:", error);
+  }
+  return null;
+}
+
+/**
+ * Unregister session from the server
+ */
+async function unregisterSession(sessionId: string): Promise<void> {
+  try {
+    await fetch(`${SERVER_URL}/sessions/${sessionId}/unregister`, {
+      method: "POST",
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    // Ignore errors during cleanup
+  }
+}
+
+/**
+ * Fetch pending tasks for this session from server
+ */
+async function fetchPendingTasks(sessionId: string): Promise<PendingTask[]> {
+  try {
+    const response = await fetch(`${SERVER_URL}/tasks/pending/${sessionId}`, {
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
@@ -58,15 +104,13 @@ async function acknowledgeTask(taskId: string): Promise<void> {
 /**
  * Inject a task using tmux send-keys
  */
-async function injectTask(task: PendingTask): Promise<void> {
+async function injectTask(tmuxSession: string, task: PendingTask): Promise<void> {
   console.log(`\r\n[PTY] Injecting task: "${task.message.slice(0, 50)}..."\r\n`);
 
   try {
     // Use tmux send-keys to send the message and Enter
-    // -t specifies the target session
-    // -l sends literal characters (no special key handling for the message)
-    await $`tmux send-keys -t ${SESSION_NAME} -l ${task.message}`.quiet();
-    await $`tmux send-keys -t ${SESSION_NAME} Enter`.quiet();
+    await $`tmux send-keys -t ${tmuxSession} -l ${task.message}`.quiet();
+    await $`tmux send-keys -t ${tmuxSession} Enter`.quiet();
     console.log(`[PTY] Task injected successfully\r\n`);
   } catch (error) {
     console.error(`[PTY] Injection failed:`, error);
@@ -76,16 +120,16 @@ async function injectTask(task: PendingTask): Promise<void> {
 /**
  * Start the task polling loop
  */
-async function startTaskPolling(): Promise<void> {
+async function startTaskPolling(sessionId: string, tmuxSession: string): Promise<void> {
   // Wait a bit for the session to start
   await Bun.sleep(2000);
 
   while (!isShuttingDown) {
     try {
-      const tasks = await fetchPendingTasks();
+      const tasks = await fetchPendingTasks(sessionId);
 
       for (const task of tasks) {
-        await injectTask(task);
+        await injectTask(tmuxSession, task);
         await acknowledgeTask(task.id);
         await Bun.sleep(500);
       }
@@ -100,23 +144,11 @@ async function startTaskPolling(): Promise<void> {
 }
 
 /**
- * Check if tmux session exists
+ * Kill tmux session
  */
-async function sessionExists(): Promise<boolean> {
+async function killTmuxSession(tmuxSession: string): Promise<void> {
   try {
-    await $`tmux has-session -t ${SESSION_NAME}`.quiet();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Kill existing session if any
- */
-async function killExistingSession(): Promise<void> {
-  try {
-    await $`tmux kill-session -t ${SESSION_NAME}`.quiet();
+    await $`tmux kill-session -t ${tmuxSession}`.quiet();
   } catch {
     // Session doesn't exist, that's fine
   }
@@ -136,13 +168,21 @@ async function main(): Promise<void> {
 ╚═══════════════════════════════════════════════════╝
 `);
 
-  // Check if server is available
+  // Check if server is available and register session
   try {
     const response = await fetch(`${SERVER_URL}/health`, {
       signal: AbortSignal.timeout(3000),
     });
     if (response.ok) {
-      console.log("✓ Server connection verified\n");
+      console.log("✓ Server connection verified");
+
+      // Register session
+      currentSession = await registerSession();
+      if (currentSession) {
+        console.log(`✓ Session registered: ${currentSession.name} (${currentSession.shortId})\n`);
+      } else {
+        console.log("⚠ Failed to register session - task injection may not work\n");
+      }
     } else {
       console.log("⚠ Server responded but with error - continuing anyway\n");
     }
@@ -151,8 +191,8 @@ async function main(): Promise<void> {
     console.log("  Run 'bun run start' to start the server\n");
   }
 
-  // Kill existing session if any
-  await killExistingSession();
+  // Determine tmux session name
+  const tmuxSession = currentSession?.name || `claude-${Date.now().toString(36)}`;
 
   // Build claude command with arguments
   const claudeArgs = process.argv.slice(2);
@@ -160,37 +200,38 @@ async function main(): Promise<void> {
     ? `/opt/homebrew/bin/claude ${claudeArgs.join(" ")}`
     : "/opt/homebrew/bin/claude";
 
-  console.log(`Starting claude in tmux session '${SESSION_NAME}'...\n`);
+  console.log(`Starting claude in tmux session '${tmuxSession}'...\n`);
 
   // Create a new tmux session running claude
-  // -d: detached mode (we'll attach after)
-  // -s: session name
-  // -x/-y: window size
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
   try {
-    await $`tmux new-session -d -s ${SESSION_NAME} -x ${cols} -y ${rows} ${claudeCmd}`.quiet();
+    await $`tmux new-session -d -s ${tmuxSession} -x ${cols} -y ${rows} ${claudeCmd}`.quiet();
   } catch (error) {
     console.error("Failed to create tmux session:", error);
+    if (currentSession) {
+      await unregisterSession(currentSession.id);
+    }
     process.exit(1);
   }
 
   // Set environment variables in the session
   try {
-    await $`tmux set-environment -t ${SESSION_NAME} TERM xterm-256color`.quiet();
-    await $`tmux set-environment -t ${SESSION_NAME} COLORTERM truecolor`.quiet();
-    await $`tmux set-environment -t ${SESSION_NAME} CLAUDE_CALL_SERVER_URL ${SERVER_URL}`.quiet();
+    await $`tmux set-environment -t ${tmuxSession} TERM xterm-256color`.quiet();
+    await $`tmux set-environment -t ${tmuxSession} COLORTERM truecolor`.quiet();
+    await $`tmux set-environment -t ${tmuxSession} CLAUDE_CALL_SERVER_URL ${SERVER_URL}`.quiet();
   } catch {
     // Ignore
   }
 
-  // Start task polling in the background
-  startTaskPolling();
+  // Start task polling in the background (only if session registered)
+  if (currentSession) {
+    startTaskPolling(currentSession.id, tmuxSession);
+  }
 
   // Attach to the session
-  // This will block until the session ends
-  const proc = Bun.spawn(["tmux", "attach-session", "-t", SESSION_NAME], {
+  const proc = Bun.spawn(["tmux", "attach-session", "-t", tmuxSession], {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -204,10 +245,25 @@ async function main(): Promise<void> {
   const exitCode = await proc.exited;
 
   // Cleanup
-  isShuttingDown = true;
-  await killExistingSession();
+  await cleanup(tmuxSession);
 
   process.exit(exitCode);
+}
+
+/**
+ * Cleanup resources
+ */
+async function cleanup(tmuxSession: string): Promise<void> {
+  isShuttingDown = true;
+
+  // Unregister session
+  if (currentSession) {
+    console.log(`\n[PTY] Unregistering session ${currentSession.shortId}...`);
+    await unregisterSession(currentSession.id);
+  }
+
+  // Kill tmux session
+  await killTmuxSession(tmuxSession);
 }
 
 // Handle signals
@@ -216,14 +272,9 @@ process.on("SIGINT", async () => {
 });
 
 process.on("SIGTERM", async () => {
-  isShuttingDown = true;
-  await killExistingSession();
+  const tmuxSession = currentSession?.name || "claude-call";
+  await cleanup(tmuxSession);
   process.exit(0);
-});
-
-process.on("exit", () => {
-  // Sync cleanup - can't await here
-  isShuttingDown = true;
 });
 
 main().catch((error) => {

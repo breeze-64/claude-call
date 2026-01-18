@@ -21,6 +21,10 @@ import {
   acknowledgeTask,
   cleanupTasks,
   getTaskStats,
+  registerSession,
+  unregisterSession,
+  getAllSessions,
+  getSession,
 } from "./task-queue";
 
 const PORT = Number(process.env.AUTH_SERVER_PORT) || 3847;
@@ -204,9 +208,28 @@ async function handleRequest(req: Request): Promise<Response> {
       response = handleHealth();
     } else if (path === "/status" && method === "GET") {
       response = handleStatus();
-    } else if (path === "/tasks/pending" && method === "GET") {
-      // Get pending tasks for PTY injection
-      response = jsonResponse(getPendingTasks());
+    } else if (path === "/sessions" && method === "GET") {
+      // List all active sessions
+      response = jsonResponse({ sessions: getAllSessions() });
+    } else if (path === "/sessions/register" && method === "POST") {
+      // Register a new PTY session
+      const body = await parseBody<{ name?: string; cwd?: string }>(req);
+      const session = registerSession(body?.name, body?.cwd);
+      response = jsonResponse({ session });
+    } else if (path.match(/^\/sessions\/[^/]+\/unregister$/) && method === "POST") {
+      // Unregister a PTY session
+      const sessionId = path.split("/")[2];
+      const success = unregisterSession(sessionId);
+      response = jsonResponse({ success });
+    } else if (path.match(/^\/tasks\/pending\/[^/]+$/) && method === "GET") {
+      // Get pending tasks for a specific session
+      const sessionId = path.split("/")[3];
+      const session = getSession(sessionId);
+      if (!session) {
+        response = jsonResponse({ error: "Session not found" }, 404);
+      } else {
+        response = jsonResponse(getPendingTasks(session.id));
+      }
     } else if (path.startsWith("/tasks/") && path.endsWith("/ack") && method === "POST") {
       // Acknowledge task as processed
       const taskId = path.split("/")[2];
@@ -239,8 +262,10 @@ async function main() {
 ╔═══════════════════════════════════════════════════╗
 ║          Claude-Call Authorization Server         ║
 ╠═══════════════════════════════════════════════════╣
-║  Telegram Button Authorization for Claude Code    ║
-║  Now with multi-option question support!          ║
+║  Telegram integration for Claude Code             ║
+║  • Tool authorization via buttons                 ║
+║  • Multi-option question support                  ║
+║  • Multi-session task injection                   ║
 ╚═══════════════════════════════════════════════════╝
 `);
 

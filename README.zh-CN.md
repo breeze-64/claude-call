@@ -18,10 +18,16 @@ Claude Code 的完整 Telegram 集成 - 授权工具、回答问题、发送新�
 - **自定义输入**：回复问题消息输入自定义文本
 - **丰富格式**：查看问题上下文和选项描述
 
-### 远程任务注入（新功能！）
+### 远程任务注入
 - **从 Telegram 发送任务**：通过发送消息启动新的 Claude 任务
 - **PTY 包装器**：使用 tmux 实现可靠的终端集成
 - **队列系统**：任务按顺序排队处理
+
+### 多会话管理
+- **会话注册**：每个 `bun run claude` 实例注册为独立会话
+- **会话选择**：多会话时选择目标会话
+- **直接定向**：使用 `@shortId` 前缀发送到特定会话
+- **会话命令**：`/sessions` 列出所有活跃会话
 
 ## 系统架构
 
@@ -38,8 +44,8 @@ Claude Code 的完整 Telegram 集成 - 授权工具、回答问题、发送新�
 │         │                     │                      │         │
 │         ▼                     ▼                      ▼         │
 │  ┌──────────────┐     ┌─────────────────┐     ┌────────────┐  │
-│  │   按钮       │     │   任务队列      │     │   PTY      │  │
-│  │   回调       │     │   管理          │     │   包装器   │  │
+│  │   按钮       │     │   会话注册 &    │     │   PTY      │  │
+│  │   回调       │     │   任务队列      │     │   包装器   │  │
 │  └──────────────┘     └─────────────────┘     │   (tmux)   │  │
 │         │                     │               └────────────┘  │
 │         └─────────────────────┴───────────────────────┘       │
@@ -54,7 +60,9 @@ Claude Code 的完整 Telegram 集成 - 授权工具、回答问题、发送新�
 |------------------|----------|------|
 | 按钮回调 (`callback_query`) | `processCallback()` | 工具授权决策 |
 | 回复机器人消息 | `processReplyMessage()` | 问题的自定义文本输入 |
+| `/sessions` 命令 | `processSessionsCommand()` | 列出所有活跃会话 |
 | 普通文本消息 | `processNewTaskMessage()` | 新任务的 PTY 注入 |
+| `@shortId 消息` | `processNewTaskMessage()` | 发送到特定会话 |
 
 ### 数据流向
 
@@ -178,12 +186,29 @@ bun run claude
 2. 点击选项或回复文本**回答问题**
 3. 发送普通消息**发送新任务**
 
+### 多会话使用
+
+在不同终端运行多个 Claude 实例：
+
+```bash
+# 终端 A
+bun run claude  # 注册为会话，如 "claude-abc123" (shortId: abc12345)
+
+# 终端 B
+bun run claude  # 注册为会话，如 "claude-def456" (shortId: def45678)
+```
+
+从 Telegram 操作：
+- **列出会话**：发送 `/sessions` 查看所有活跃会话
+- **直接定向**：发送 `@abc12345 你的任务` 发送到特定会话
+- **自动选择**：多会话时，机器人显示选择按钮
+
 ### tmux 控制
 
 由于 PTY 包装器使用 tmux：
 - **向上滚动**：`Ctrl+b` 然后 `[`，使用方向键，`q` 退出
 - **分离会话**：`Ctrl+b` 然后 `d`
-- **重新连接**：`tmux attach -t claude-call`
+- **重新连接**：`tmux attach -t <session-name>`
 
 ## API 参考
 
@@ -193,7 +218,10 @@ bun run claude
 |------|------|------|
 | `POST /authorize` | 提交授权或问题请求 |
 | `GET /poll/:id` | 轮询请求决策 |
-| `GET /tasks/pending` | 获取待处理的 PTY 注入任务 |
+| `GET /sessions` | 列出所有活跃会话 |
+| `POST /sessions/register` | 注册新的 PTY 会话 |
+| `POST /sessions/:id/unregister` | 注销 PTY 会话 |
+| `GET /tasks/pending/:sessionId` | 获取特定会话的待处理任务 |
 | `POST /tasks/:id/ack` | 确认任务已处理 |
 | `GET /tasks/stats` | 任务队列统计 |
 | `GET /health` | 健康检查 |

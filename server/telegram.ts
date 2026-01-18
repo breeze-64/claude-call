@@ -14,7 +14,18 @@ import {
   setSessionAllowAll,
   isRequestTimedOut,
 } from "./store";
-import { addTask } from "./task-queue";
+import {
+  addTask,
+  addTaskToDefaultSession,
+  addTaskToSession,
+  getAllSessions,
+  getSession,
+  getSessionCount,
+  type Session,
+} from "./task-queue";
+
+// Store pending task messages waiting for session selection
+const pendingTaskMessages = new Map<number, { text: string; messageId: number }>();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
@@ -255,6 +266,41 @@ export async function processCallback(
 
   const data = callbackQuery.data;
 
+  // Handle session selection for task (format: sess:sessionId:originalMsgId)
+  if (data.startsWith("sess:")) {
+    const parts = data.split(":");
+    const sessionId = parts[1];
+    const originalMsgId = parseInt(parts[2], 10);
+
+    const pendingTask = pendingTaskMessages.get(originalMsgId);
+    if (!pendingTask) {
+      await answerCallbackQuery(callbackQuery.id, "任务已过期");
+      return;
+    }
+
+    const session = getSession(sessionId);
+    if (!session) {
+      await answerCallbackQuery(callbackQuery.id, "会话不存在");
+      return;
+    }
+
+    // Add task to selected session
+    const task = addTask(session.id, pendingTask.text);
+    pendingTaskMessages.delete(originalMsgId);
+
+    // Update message
+    const preview = pendingTask.text.length > 50 ? pendingTask.text.slice(0, 50) + "..." : pendingTask.text;
+    await callApi("editMessageText", {
+      chat_id: CHAT_ID,
+      message_id: callbackQuery.message.message_id,
+      text: `📝 *任务已发送到 ${session.name}*\n\n\`${preview}\`\n\n_任务 ID: ${task.id.slice(0, 8)}_`,
+      parse_mode: "Markdown",
+    });
+
+    await answerCallbackQuery(callbackQuery.id, `已发送到 ${session.name}`);
+    return;
+  }
+
   // Handle option selection (format: opt:requestId:optionId)
   if (data.startsWith("opt:")) {
     const parts = data.split(":");
@@ -424,6 +470,9 @@ export async function pollUpdates(): Promise<void> {
         if (update.message.reply_to_message) {
           // Reply message → custom input for questions
           await processReplyMessage(update.message);
+        } else if (update.message.text?.startsWith("/sessions")) {
+          // /sessions command → list active sessions
+          await processSessionsCommand(update.message);
         } else if (update.message.text && !update.message.text.startsWith("/")) {
           // Plain text message (not a command) → new task for PTY injection
           await processNewTaskMessage(update.message);
@@ -477,6 +526,59 @@ export async function sendTestMessage(): Promise<boolean> {
 }
 
 /**
+ * Process /sessions command - list active sessions
+ */
+async function processSessionsCommand(message: TelegramMessage): Promise<void> {
+  // Verify it's from the correct chat
+  if (String(message.chat.id) !== CHAT_ID) {
+    return;
+  }
+
+  const sessions = getAllSessions();
+
+  if (sessions.length === 0) {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: "📭 *没有活跃的会话*\n\n运行 `bun run claude` 启动新会话",
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  const sessionList = sessions.map((s, i) => {
+    const age = Math.round((Date.now() - s.createdAt) / 60000);
+    return `${i + 1}. *${s.name}* (\`${s.shortId}\`)\n   📂 ${s.cwd}\n   ⏱️ ${age} 分钟前创建`;
+  }).join("\n\n");
+
+  await callApi("sendMessage", {
+    chat_id: CHAT_ID,
+    text: `📋 *活跃会话 (${sessions.length})*\n\n${sessionList}\n\n_发送消息时可用 @shortId 指定会话_\n_例如: @${sessions[0].shortId} 你的任务_`,
+    parse_mode: "Markdown",
+    reply_to_message_id: message.message_id,
+  });
+}
+
+/**
+ * Create session selection keyboard
+ */
+function createSessionKeyboard(
+  sessions: Session[],
+  originalMsgId: number
+): TelegramInlineKeyboard {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  for (const session of sessions) {
+    rows.push([{
+      text: `📱 ${session.name}`,
+      callback_data: `sess:${session.shortId}:${originalMsgId}`,
+    }]);
+  }
+
+  return { inline_keyboard: rows };
+}
+
+/**
  * Process a new task message from Telegram (non-reply, non-command message)
  * These messages are queued for PTY injection
  */
@@ -491,35 +593,80 @@ export async function processNewTaskMessage(
     return;
   }
 
-  const taskText = message.text.trim();
+  let taskText = message.text.trim();
   if (!taskText) return;
 
-  try {
-    // Add task to queue
-    const task = addTask(taskText);
+  const sessions = getAllSessions();
 
-    // Send confirmation message
-    const preview = taskText.length > 100 ? taskText.slice(0, 100) + "..." : taskText;
+  // Check if no sessions available
+  if (sessions.length === 0) {
     await callApi("sendMessage", {
       chat_id: CHAT_ID,
-      text: `📝 *任务已加入队列*\n\n\`${preview}\`\n\n_任务 ID: ${task.id.slice(0, 8)}_\n_等待 PTY 包装器处理..._`,
+      text: "❌ *没有活跃的会话*\n\n请先运行 `bun run claude` 启动会话",
       parse_mode: "Markdown",
       reply_to_message_id: message.message_id,
     });
+    return;
+  }
 
-    console.log(`[Telegram] New task queued: ${task.id.slice(0, 8)}...`);
-  } catch (error) {
-    console.error("[Telegram] Failed to process new task:", error);
+  // Check if message specifies a session with @shortId prefix
+  const sessionMatch = taskText.match(/^@([a-f0-9]{8})\s+(.+)$/i);
+  if (sessionMatch) {
+    const [, shortId, actualTask] = sessionMatch;
+    const session = getSession(shortId);
 
-    // Send error notification to user
-    try {
+    if (!session) {
       await callApi("sendMessage", {
         chat_id: CHAT_ID,
-        text: "❌ 任务添加失败，请稍后重试",
+        text: `❌ 会话 \`${shortId}\` 不存在\n\n使用 /sessions 查看活跃会话`,
+        parse_mode: "Markdown",
         reply_to_message_id: message.message_id,
       });
-    } catch {
-      // Ignore error when sending error notification
+      return;
     }
+
+    // Add task to specified session
+    const task = addTask(session.id, actualTask);
+    const preview = actualTask.length > 100 ? actualTask.slice(0, 100) + "..." : actualTask;
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: `📝 *任务已发送到 ${session.name}*\n\n\`${preview}\`\n\n_任务 ID: ${task.id.slice(0, 8)}_`,
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    return;
   }
+
+  // Single session: send directly
+  if (sessions.length === 1) {
+    const session = sessions[0];
+    const task = addTask(session.id, taskText);
+    const preview = taskText.length > 100 ? taskText.slice(0, 100) + "..." : taskText;
+
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: `📝 *任务已发送到 ${session.name}*\n\n\`${preview}\`\n\n_任务 ID: ${task.id.slice(0, 8)}_`,
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    console.log(`[Telegram] Task sent to ${session.name}: ${task.id.slice(0, 8)}...`);
+    return;
+  }
+
+  // Multiple sessions: show selection buttons
+  pendingTaskMessages.set(message.message_id, {
+    text: taskText,
+    messageId: message.message_id,
+  });
+
+  const preview = taskText.length > 50 ? taskText.slice(0, 50) + "..." : taskText;
+  const keyboard = createSessionKeyboard(sessions, message.message_id);
+
+  await callApi("sendMessage", {
+    chat_id: CHAT_ID,
+    text: `🔀 *选择目标会话*\n\n任务: \`${preview}\`\n\n点击下方按钮选择发送到哪个会话:`,
+    parse_mode: "Markdown",
+    reply_to_message_id: message.message_id,
+    reply_markup: keyboard,
+  });
 }
