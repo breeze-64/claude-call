@@ -1,52 +1,131 @@
 # Claude-Call
 
-Authorize Claude Code tool usage via Telegram buttons.
+Full Telegram integration for Claude Code - authorize tools, answer questions, and send new tasks, all from your phone.
 
 English | [中文](./README.zh-CN.md)
 
 ## Features
 
-- **Telegram Integration**: Receive authorization requests as Telegram messages with inline buttons
-- **Quick Actions**: Allow, Deny, or Allow All for the session
-- **Real-time**: Instant response when you click a button
-- **Timeout**: Auto-deny after 30 seconds if no response
-- **Fallback**: Falls back to terminal prompt if server is unavailable
+### Tool Authorization
+- **Telegram Buttons**: Receive authorization requests as interactive messages
+- **Quick Actions**: Allow, Deny, or Allow All for the entire session
+- **Real-time Response**: Instant feedback when you click a button
+- **Timeout Protection**: Auto-deny after 30 seconds if no response
+- **Graceful Fallback**: Falls back to terminal prompt if server unavailable
 
-## Setup
+### Interactive Questions
+- **Multi-Option Questions**: Answer Claude's questions via Telegram buttons
+- **Custom Input**: Reply to question messages with free-form text
+- **Rich Formatting**: See question context and option descriptions
 
-### 1. Install Dependencies
+### Remote Task Injection (New!)
+- **Send Tasks from Telegram**: Start new Claude tasks by sending messages
+- **PTY Wrapper**: Uses tmux for reliable terminal integration
+- **Queue System**: Tasks are queued and processed in order
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    Claude-Call System                          │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  ┌──────────────┐     ┌─────────────────┐     ┌────────────┐  │
+│  │   Telegram   │────▶│  Auth Server    │────▶│   Claude   │  │
+│  │   Messages   │     │  (Bun HTTP)     │     │    Code    │  │
+│  └──────────────┘     └─────────────────┘     └────────────┘  │
+│         │                     │                      │         │
+│         │                     │                      │         │
+│         ▼                     ▼                      ▼         │
+│  ┌──────────────┐     ┌─────────────────┐     ┌────────────┐  │
+│  │  Button      │     │  Task Queue     │     │  PTY       │  │
+│  │  Callbacks   │     │  Management     │     │  Wrapper   │  │
+│  └──────────────┘     └─────────────────┘     │  (tmux)    │  │
+│         │                     │               └────────────┘  │
+│         └─────────────────────┴───────────────────────┘       │
+│                              │                                 │
+│                    Telegram Long Polling                       │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Message Flow
+
+| Telegram Message Type | Handler | Purpose |
+|----------------------|---------|---------|
+| Button callback (`callback_query`) | `processCallback()` | Tool authorization decisions |
+| Reply to bot message | `processReplyMessage()` | Custom text input for questions |
+| Plain text message | `processNewTaskMessage()` | New task for PTY injection |
+
+### Data Flow
+
+```
+Tool Authorization:
+Claude Code → PreToolUse Hook → POST /authorize → Telegram Message
+                                                        ↓
+                              Hook polls /poll/:id ← User clicks button
+
+Task Injection:
+Telegram Message → Server Task Queue → PTY Wrapper polls /tasks/pending
+                                                        ↓
+                                      tmux send-keys → Claude Code
+```
+
+## Installation
+
+### Prerequisites
+
+- [Bun](https://bun.sh) runtime
+- [tmux](https://github.com/tmux/tmux) (for PTY wrapper)
+- Telegram Bot Token
+
+### 1. Clone and Install
 
 ```bash
-cd /Users/h/Documents/code/claude-call
+git clone https://github.com/yourusername/claude-call.git
+cd claude-call
 bun install
 ```
 
-### 2. Configure Environment
-
-The `.env` file is already configured with your Telegram bot token and chat ID.
-
-### 3. Start the Server
+### 2. Install tmux (for task injection)
 
 ```bash
-bun run start
+# macOS
+brew install tmux
+
+# Ubuntu/Debian
+sudo apt install tmux
 ```
 
-Or use the start script:
+### 3. Configure Environment
+
+Create `.env` file:
 
 ```bash
-./scripts/start.sh
+cp .env.example .env
 ```
 
-### 4. Enable the Plugin
+Edit `.env`:
 
-Add the plugin to your Claude Code configuration:
-
-```bash
-# In Claude Code, run:
-/plugin install /Users/h/Documents/code/claude-call
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+AUTH_SERVER_PORT=3847
+AUTH_TIMEOUT_MS=30000
 ```
 
-Or manually add to `~/.claude/settings.json`:
+**Getting Telegram Bot Token:**
+1. Message [@BotFather](https://t.me/BotFather) on Telegram
+2. Send `/newbot` and follow the prompts
+3. Copy the token provided
+
+**Getting Chat ID:**
+1. Send any message to your bot
+2. Visit `https://api.telegram.org/bot<TOKEN>/getUpdates`
+3. Find `chat.id` in the response JSON
+
+### 4. Configure Claude Code Hook
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -57,7 +136,7 @@ Or manually add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bun run /Users/h/Documents/code/claude-call/hooks/scripts/telegram-auth.ts",
+            "command": "bun run /path/to/claude-call/hooks/scripts/telegram-auth.ts",
             "timeout": 35000
           }
         ]
@@ -69,60 +148,176 @@ Or manually add to `~/.claude/settings.json`:
 
 ## Usage
 
-1. Start the server: `bun run start`
-2. Use Claude Code normally
-3. When Claude tries to use a tool (Bash, Write, Edit, etc.), you'll receive a Telegram message
-4. Click a button to authorize:
-   - ✅ **Allow**: Allow this specific operation
-   - ❌ **Deny**: Block this operation
-   - 🔓 **Allow All Session**: Allow all future operations in this session
+### Basic: Tool Authorization Only
 
-## Architecture
+```bash
+# Terminal 1: Start the server
+bun run start
 
-```
-Claude Code → PreToolUse Hook → Authorization Server → Telegram Bot
-                                       ↑
-                              User clicks button
-                                       ↓
-                              Telegram Polling → Server → Hook returns decision
+# Terminal 2: Use Claude Code normally
+claude
 ```
 
-## API Endpoints
+When Claude tries to use tools, you'll receive Telegram messages with buttons:
+- ✅ **Allow**: Approve this operation
+- ❌ **Deny**: Block this operation
+- 🔓 **Allow All Session**: Approve all future operations
+
+### Advanced: With Task Injection
+
+```bash
+# Terminal 1: Start the server
+bun run start
+
+# Terminal 2: Start Claude with PTY wrapper
+bun run claude
+```
+
+Now you can:
+1. **Authorize tools** via Telegram buttons
+2. **Answer questions** by clicking options or replying with text
+3. **Send new tasks** by sending plain messages to the bot
+
+### tmux Controls
+
+Since the PTY wrapper uses tmux:
+- **Scroll up**: `Ctrl+b` then `[`, use arrow keys, `q` to exit
+- **Detach**: `Ctrl+b` then `d`
+- **Reattach**: `tmux attach -t claude-call`
+
+## API Reference
+
+### Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/authorize` | POST | Submit a new authorization request |
-| `/poll/:id` | GET | Poll for authorization decision |
-| `/health` | GET | Health check |
-| `/status` | GET | View pending requests (debug) |
+| `POST /authorize` | Submit authorization or question request |
+| `GET /poll/:id` | Poll for request decision |
+| `GET /tasks/pending` | Get pending tasks for PTY injection |
+| `POST /tasks/:id/ack` | Acknowledge task as processed |
+| `GET /tasks/stats` | Task queue statistics |
+| `GET /health` | Health check |
+| `GET /status` | Debug: view pending requests |
+
+### Authorization Request
+
+```typescript
+POST /authorize
+{
+  sessionId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  cwd?: string;
+  // For questions:
+  type?: "question";
+  question?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+}
+```
+
+### Poll Response
+
+```typescript
+GET /poll/:requestId
+{
+  status: "pending" | "resolved" | "timeout" | "not_found";
+  decision?: "allow" | "deny";
+  selectedOption?: string;  // For questions
+  elapsed?: number;
+}
+```
 
 ## Configuration
 
-Environment variables in `.env`:
+### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Your Telegram bot token |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
-| `AUTH_SERVER_PORT` | Server port (default: 3847) |
-| `AUTH_TIMEOUT_MS` | Request timeout in ms (default: 30000) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | - | Telegram Bot API token (required) |
+| `TELEGRAM_CHAT_ID` | - | Your Telegram chat ID (required) |
+| `AUTH_SERVER_PORT` | 3847 | HTTP server port |
+| `AUTH_TIMEOUT_MS` | 30000 | Authorization timeout in ms |
+| `CLAUDE_CALL_SERVER_URL` | `http://localhost:3847` | Server URL for PTY wrapper |
+
+### File Structure
+
+```
+claude-call/
+├── server/
+│   ├── index.ts        # HTTP server & API routes
+│   ├── telegram.ts     # Telegram bot integration
+│   ├── store.ts        # Request state management
+│   ├── task-queue.ts   # Task queue for PTY injection
+│   └── types.ts        # TypeScript interfaces
+├── wrapper/
+│   └── pty-wrapper.ts  # tmux-based PTY wrapper
+├── hooks/
+│   └── scripts/
+│       └── telegram-auth.ts  # PreToolUse hook script
+└── package.json
+```
 
 ## Troubleshooting
 
-### Server not starting
+### Server Issues
 
-- Check if port 3847 is available
-- Verify Telegram bot token is correct
-- Ensure bun is installed
+**Port already in use:**
+```bash
+lsof -i :3847
+kill -9 <PID>
+```
 
-### Not receiving Telegram messages
+**Telegram connection failed:**
+- Verify bot token is correct
+- Ensure you've messaged the bot at least once
+- Check server logs for API errors
 
-- Verify your chat ID is correct
-- Make sure you've messaged the bot at least once
-- Check server logs for Telegram API errors
+### PTY Wrapper Issues
 
-### Hook not triggering
+**tmux not found:**
+```bash
+brew install tmux  # macOS
+sudo apt install tmux  # Linux
+```
 
-- Verify the plugin is installed correctly
-- Check Claude Code's hook configuration
+**Task not executing:**
+- Ensure server is running (`bun run start`)
+- Check that PTY wrapper shows "Server connection verified"
+- Verify the message appears in the Claude input line
+
+### Hook Issues
+
+**Hook not triggering:**
+- Verify path in `~/.claude/settings.json` is correct
 - Ensure bun is in your PATH
+- Check Claude Code logs for hook errors
+
+**Authorization timeout:**
+- Increase `AUTH_TIMEOUT_MS` in `.env`
+- Increase `timeout` in hook configuration
+
+## Development
+
+```bash
+# Development mode with hot reload
+bun run dev
+
+# Run PTY wrapper
+bun run claude
+```
+
+## Tech Stack
+
+- **Runtime**: Bun
+- **Language**: TypeScript
+- **Terminal**: tmux (PTY management)
+- **Communication**: Telegram Bot API (Long Polling)
+- **Integration**: Claude Code PreToolUse Hook
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.

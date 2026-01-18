@@ -2,16 +2,19 @@ import type {
   PendingRequest,
   TelegramUpdate,
   TelegramInlineKeyboard,
+  TelegramMessage,
   QuestionOption,
 } from "./types";
 import {
   getRequest,
+  getRequestByMessageId,
   resolveAuthRequest,
   resolveQuestionRequest,
   setRequestMessageId,
   setSessionAllowAll,
   isRequestTimedOut,
 } from "./store";
+import { addTask } from "./task-queue";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
@@ -91,7 +94,9 @@ function formatQuestionMessage(request: PendingRequest): string {
 
 🔑 Session: \`${sessionShort}...\`
 
-${optionsText}`;
+${optionsText}
+
+💡 _回复此消息可输入自定义内容_`;
 }
 
 /**
@@ -334,6 +339,63 @@ export async function processCallback(
 }
 
 /**
+ * Process a reply message from Telegram (for custom text input)
+ */
+export async function processReplyMessage(
+  message: TelegramUpdate["message"]
+): Promise<void> {
+  console.log("[DEBUG] processReplyMessage called with:", JSON.stringify(message, null, 2));
+
+  if (!message?.text || !message.reply_to_message) {
+    console.log("[DEBUG] Skipping - no text or not a reply");
+    return;
+  }
+
+  // Verify it's from the correct chat
+  if (String(message.chat.id) !== CHAT_ID) {
+    console.warn("Message from unauthorized chat:", message.chat.id);
+    return;
+  }
+
+  const replyToMessageId = message.reply_to_message.message_id;
+  console.log("[DEBUG] Looking for request with messageId:", replyToMessageId);
+
+  const request = getRequestByMessageId(replyToMessageId);
+  console.log("[DEBUG] Found request:", request ? request.id : "NOT FOUND");
+
+  if (!request) {
+    // Not a reply to our message, ignore
+    console.log("[DEBUG] Request not found for messageId:", replyToMessageId);
+    return;
+  }
+
+  if (request.resolved) {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: "⚠️ 该请求已处理",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  // Note: Don't check timeout here - if user replied, we should accept it
+  // The hook will handle timeout on its own
+
+  const customText = message.text.trim();
+
+  // Use special prefix to indicate custom input
+  resolveQuestionRequest(request.id, `__CUSTOM__:${customText}`);
+  await updateMessage(request, `✏️ *自定义输入: ${customText}*`);
+
+  // Send confirmation
+  await callApi("sendMessage", {
+    chat_id: CHAT_ID,
+    text: `✅ 已收到: "${customText}"`,
+    reply_to_message_id: message.message_id,
+  });
+}
+
+/**
  * Poll for Telegram updates (long polling)
  */
 export async function pollUpdates(): Promise<void> {
@@ -341,14 +403,31 @@ export async function pollUpdates(): Promise<void> {
     const updates = await callApi<TelegramUpdate[]>("getUpdates", {
       offset: lastUpdateId + 1,
       timeout: 10,
-      allowed_updates: ["callback_query"],
+      allowed_updates: ["callback_query", "message"],
     });
+
+    if (updates.length > 0) {
+      console.log("[DEBUG] Received updates:", updates.length);
+    }
 
     for (const update of updates) {
       lastUpdateId = update.update_id;
 
       if (update.callback_query) {
+        console.log("[DEBUG] Processing callback_query");
         await processCallback(update.callback_query);
+      }
+
+      if (update.message) {
+        console.log("[DEBUG] Received message:", update.message.text?.slice(0, 50));
+        console.log("[DEBUG] Is reply:", !!update.message.reply_to_message);
+        if (update.message.reply_to_message) {
+          // Reply message → custom input for questions
+          await processReplyMessage(update.message);
+        } else if (update.message.text && !update.message.text.startsWith("/")) {
+          // Plain text message (not a command) → new task for PTY injection
+          await processNewTaskMessage(update.message);
+        }
       }
     }
   } catch (error) {
@@ -364,8 +443,16 @@ export function startPolling(): void {
 
   const poll = async () => {
     while (true) {
-      await pollUpdates();
-      // Small delay to prevent tight loop on errors
+      try {
+        await pollUpdates();
+      } catch (error) {
+        // Log error but continue polling
+        console.error("Polling error (will retry):", String(error).slice(0, 100));
+        // Wait longer on error (409 conflict needs time to resolve)
+        await Bun.sleep(5000);
+        continue;
+      }
+      // Small delay to prevent tight loop
       await Bun.sleep(100);
     }
   };
@@ -386,5 +473,53 @@ export async function sendTestMessage(): Promise<boolean> {
   } catch (error) {
     console.error("Failed to send test message:", error);
     return false;
+  }
+}
+
+/**
+ * Process a new task message from Telegram (non-reply, non-command message)
+ * These messages are queued for PTY injection
+ */
+export async function processNewTaskMessage(
+  message: TelegramMessage
+): Promise<void> {
+  if (!message?.text) return;
+
+  // Verify it's from the correct chat
+  if (String(message.chat.id) !== CHAT_ID) {
+    console.warn("[Telegram] Task message from unauthorized chat:", message.chat.id);
+    return;
+  }
+
+  const taskText = message.text.trim();
+  if (!taskText) return;
+
+  try {
+    // Add task to queue
+    const task = addTask(taskText);
+
+    // Send confirmation message
+    const preview = taskText.length > 100 ? taskText.slice(0, 100) + "..." : taskText;
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: `📝 *任务已加入队列*\n\n\`${preview}\`\n\n_任务 ID: ${task.id.slice(0, 8)}_\n_等待 PTY 包装器处理..._`,
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+
+    console.log(`[Telegram] New task queued: ${task.id.slice(0, 8)}...`);
+  } catch (error) {
+    console.error("[Telegram] Failed to process new task:", error);
+
+    // Send error notification to user
+    try {
+      await callApi("sendMessage", {
+        chat_id: CHAT_ID,
+        text: "❌ 任务添加失败，请稍后重试",
+        reply_to_message_id: message.message_id,
+      });
+    } catch {
+      // Ignore error when sending error notification
+    }
   }
 }

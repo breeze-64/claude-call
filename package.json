@@ -1,14 +1,15 @@
 {
   "name": "claude-call",
-  "version": "1.0.0",
-  "type": "module",
-  "description": "Telegram button authorization for Claude Code",
-  "scripts": {
-    "start": "bun run server/index.ts",
-    "dev": "bun --watch run server/index.ts"
-  },
+  "version": "1.1.0",
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.0.0"
-  }
+  },
+  "description": "Telegram button authorization and task injection for Claude Code",
+  "scripts": {
+    "start": "bun run server/index.ts",
+    "dev": "bun --watch run server/index.ts",
+    "claude": "bun run wrapper/pty-wrapper.ts"
+  },
+  "type": "module"
 }

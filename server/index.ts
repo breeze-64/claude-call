@@ -16,6 +16,12 @@ import {
   startPolling,
   sendTestMessage,
 } from "./telegram";
+import {
+  getPendingTasks,
+  acknowledgeTask,
+  cleanupTasks,
+  getTaskStats,
+} from "./task-queue";
 
 const PORT = Number(process.env.AUTH_SERVER_PORT) || 3847;
 
@@ -112,23 +118,7 @@ function handlePoll(requestId: string): Response {
     return jsonResponse(response, 404);
   }
 
-  // Check timeout
-  if (isRequestTimedOut(request) && !request.resolved) {
-    if (request.type === "authorization") {
-      resolveAuthRequest(requestId, "deny");
-      updateMessage(request, "⏱️ *Timeout - Denied*");
-    } else {
-      updateMessage(request, "⏱️ *Timeout*");
-    }
-
-    const response: PollResponse = {
-      status: "timeout",
-      decision: request.type === "authorization" ? "deny" : undefined,
-      message: "Authorization timeout",
-    };
-    return jsonResponse(response);
-  }
-
+  // IMPORTANT: Check resolved FIRST - user may have replied just before timeout
   if (request.resolved) {
     const response: PollResponse = {
       status: "resolved",
@@ -136,6 +126,23 @@ function handlePoll(requestId: string): Response {
       selectedOption: request.selectedOption,
     };
     return jsonResponse(response);
+  }
+
+  // Check timeout only if not resolved
+  if (isRequestTimedOut(request)) {
+    if (request.type === "authorization") {
+      // For authorization: return timeout and deny
+      resolveAuthRequest(requestId, "deny");
+      updateMessage(request, "⏱️ *Timeout - Denied*");
+      const response: PollResponse = {
+        status: "timeout",
+        decision: "deny",
+        message: "Authorization timeout",
+      };
+      return jsonResponse(response);
+    }
+    // For question: DON'T return timeout - let hook continue waiting
+    // User may still reply via Telegram
   }
 
   const elapsed = Date.now() - request.createdAt;
@@ -197,6 +204,17 @@ async function handleRequest(req: Request): Promise<Response> {
       response = handleHealth();
     } else if (path === "/status" && method === "GET") {
       response = handleStatus();
+    } else if (path === "/tasks/pending" && method === "GET") {
+      // Get pending tasks for PTY injection
+      response = jsonResponse(getPendingTasks());
+    } else if (path.startsWith("/tasks/") && path.endsWith("/ack") && method === "POST") {
+      // Acknowledge task as processed
+      const taskId = path.split("/")[2];
+      const success = acknowledgeTask(taskId);
+      response = jsonResponse({ success });
+    } else if (path === "/tasks/stats" && method === "GET") {
+      // Get task queue stats (for debugging)
+      response = jsonResponse(getTaskStats());
     } else {
       response = jsonResponse({ error: "Not found" }, 404);
     }
@@ -238,8 +256,11 @@ async function main() {
   // Start Telegram polling
   startPolling();
 
-  // Start cleanup interval
-  setInterval(cleanupStale, 60000);
+  // Start cleanup interval (requests and tasks)
+  setInterval(() => {
+    cleanupStale();
+    cleanupTasks();
+  }, 60000);
 
   // Start HTTP server
   const server = Bun.serve({

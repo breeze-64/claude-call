@@ -113,6 +113,25 @@ export interface PollResponse {
 export interface TelegramUpdate {
   update_id: number;
   callback_query?: TelegramCallbackQuery;
+  message?: TelegramMessage;
+}
+
+/**
+ * Telegram Message (for reply handling)
+ */
+export interface TelegramMessage {
+  message_id: number;
+  chat: {
+    id: number;
+  };
+  from?: {
+    id: number;
+    username?: string;
+  };
+  text?: string;
+  reply_to_message?: {
+    message_id: number;
+  };
 }
 
 /**
@@ -142,3 +161,8 @@ export interface TelegramInlineKeyboard {
     callback_data: string;
   }>>;
 }
+
+/**
+ * Re-export PendingTask from task-queue for convenience
+ */
+export type { PendingTask } from "./task-queue";

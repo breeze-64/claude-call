@@ -58,7 +58,7 @@ interface ServerOption {
 
 const SERVER_URL = process.env.CLAUDE_CALL_SERVER_URL || "http://localhost:3847";
 const POLL_INTERVAL = 500; // ms
-const MAX_WAIT = 32000; // ms
+const MAX_WAIT = 600000; // ms (10 minutes max)
 
 /**
  * Tools that don't require authorization (safe, read-only)
@@ -75,6 +75,11 @@ const SKIP_TOOLS = new Set([
 
 /**
  * Output decision and exit
+ *
+ * According to Claude Code hook docs:
+ * - "allow": exit 0, output to stdout
+ * - "deny": exit 2, output to stderr
+ * - "ask": exit 0, output to stdout (falls back to terminal prompt)
  */
 function outputDecision(
   decision: "allow" | "deny" | "ask",
@@ -95,8 +100,17 @@ function outputDecision(
     output.systemMessage = message;
   }
 
-  console.log(JSON.stringify(output));
-  process.exit(decision === "deny" ? 2 : 0);
+  const jsonOutput = JSON.stringify(output);
+
+  if (decision === "deny") {
+    // For deny: output to stderr and exit 2
+    console.error(jsonOutput);
+    process.exit(2);
+  } else {
+    // For allow/ask: output to stdout and exit 0
+    console.log(jsonOutput);
+    process.exit(0);
+  }
 }
 
 /**
@@ -195,13 +209,24 @@ async function main() {
           const pollResult: PollResponse = await pollResponse.json();
 
           if (pollResult.status === "resolved" && pollResult.selectedOption) {
+            const selectedOption = pollResult.selectedOption;
+
+            // Check if it's a custom input (prefixed with __CUSTOM__:)
+            if (selectedOption.startsWith("__CUSTOM__:")) {
+              const customText = selectedOption.slice("__CUSTOM__:".length);
+              // Return custom text directly as the answer
+              outputDecision("allow", `自定义输入: ${customText}`, customText);
+              return; // Safety return (outputDecision calls process.exit)
+            }
+
             // Find the index of the selected option (A=0, B=1, etc.)
-            const optionIndex = pollResult.selectedOption.charCodeAt(0) - 65;
+            const optionIndex = selectedOption.charCodeAt(0) - 65;
             const questions = tool_input.questions as Question[];
-            const selectedLabel = questions[0]?.options[optionIndex]?.label || pollResult.selectedOption;
+            const selectedLabel = questions[0]?.options[optionIndex]?.label || selectedOption;
 
             // Return the selected answer
             outputDecision("allow", `用户选择: ${selectedLabel}`, selectedLabel);
+            return; // Safety return
           }
 
           if (pollResult.status === "timeout") {
@@ -255,7 +280,8 @@ async function main() {
       const pollResult: PollResponse = await pollResponse.json();
 
       if (pollResult.status === "resolved") {
-        outputDecision(pollResult.decision!, "Authorized via Telegram");
+        const msg = pollResult.decision === "allow" ? "Authorized via Telegram" : "Denied via Telegram";
+        outputDecision(pollResult.decision!, msg);
       }
 
       if (pollResult.status === "timeout") {

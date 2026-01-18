@@ -11,9 +11,9 @@ const pendingRequests = new Map<string, PendingRequest>();
 const sessionStates = new Map<string, SessionState>();
 
 /**
- * Timeout for requests in milliseconds
+ * Timeout for requests in milliseconds (10 minutes max)
  */
-const REQUEST_TIMEOUT = Number(process.env.AUTH_TIMEOUT_MS) || 30000;
+const REQUEST_TIMEOUT = Number(process.env.AUTH_TIMEOUT_MS) || 600000;
 
 /**
  * Session TTL in milliseconds (1 hour)
@@ -75,6 +75,18 @@ export function createQuestionRequest(
  */
 export function getRequest(requestId: string): PendingRequest | undefined {
   return pendingRequests.get(requestId);
+}
+
+/**
+ * Get a pending request by Telegram message ID
+ */
+export function getRequestByMessageId(messageId: number): PendingRequest | undefined {
+  for (const request of pendingRequests.values()) {
+    if (request.messageId === messageId) {
+      return request;
+    }
+  }
+  return undefined;
 }
 
 /**
