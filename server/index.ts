@@ -30,6 +30,15 @@ import {
 
 const PORT = Number(process.env.AUTH_SERVER_PORT) || 3847;
 
+// Debug log file
+const LOG_FILE = "debug.log";
+function debugLog(message: string) {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] ${message}\n`;
+  console.log(line.trim());
+  Bun.write(LOG_FILE, line, { append: true }).catch(() => {});
+}
+
 /**
  * Parse JSON body from request
  */
@@ -63,7 +72,10 @@ async function handleAuthorize(req: Request): Promise<Response> {
   const { sessionId, toolInput, cwd, type, question, options } = body;
   let { toolName } = body;
 
-  // Log request details for debugging
+  // Log full request body for debugging to file
+  const logLine = `[${new Date().toISOString()}] toolName="${toolName}" body=${JSON.stringify(body).slice(0, 500)}\n`;
+  Bun.write("debug.log", logLine, { append: true }).catch(() => {});
+
   console.log(`[Authorize] Received: toolName=${toolName}, sessionId=${sessionId?.slice(0, 8)}, type=${type || "auth"}`);
   if (toolInput) {
     console.log(`[Authorize] toolInput keys: ${Object.keys(toolInput).join(", ")}`);
