@@ -1,6 +1,15 @@
 # Claude-Call
 
-Full Telegram integration for Claude Code - authorize tools, answer questions, and send new tasks, all from your phone.
+> **Remote control Claude Code via Telegram** - Authorize tool execution, answer questions, and inject tasks from your phone.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
+[![TypeScript](https://img.shields.io/badge/language-TypeScript-blue)](https://www.typescriptlang.org/)
+[![Claude Code](https://img.shields.io/badge/integrates%20with-Claude%20Code-purple)](https://claude.ai/code)
+
+Full Telegram integration for [Claude Code](https://claude.ai/code) (Anthropic's official CLI for Claude). Authorize tools, answer questions, and send new tasks, all from your phone.
+
+**Keywords**: Claude Code, Telegram Bot, Tool Authorization, Remote Control, AI Assistant, Anthropic, CLI Integration, PreToolUse Hook, PTY Wrapper, tmux
 
 English | [中文](./README.zh-CN.md)
 
@@ -89,7 +98,7 @@ Telegram Message → Server Task Queue → PTY Wrapper polls /tasks/pending
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/yourusername/claude-call.git
+git clone https://github.com/breeze-64/claude-call.git
 cd claude-call
 bun install
 ```

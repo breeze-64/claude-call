@@ -161,14 +161,14 @@ async function main() {
     input = JSON.parse(inputText);
   } catch {
     // Invalid input - allow by default
-    outputDecision("allow", "Invalid hook input");
+    return outputDecision("allow", "Invalid hook input");
   }
 
-  const { session_id, tool_name, tool_input, cwd } = input!;
+  const { session_id, tool_name, tool_input, cwd } = input;
 
   // Skip safe tools
   if (SKIP_TOOLS.has(tool_name)) {
-    outputDecision("allow");
+    return outputDecision("allow");
   }
 
   try {
@@ -230,20 +230,20 @@ async function main() {
           }
 
           if (pollResult.status === "timeout") {
-            outputDecision("ask", "Telegram 超时，请在终端选择");
+            return outputDecision("ask", "Telegram 超时，请在终端选择");
           }
 
           if (pollResult.status === "not_found") {
-            outputDecision("ask", "请求未找到");
+            return outputDecision("ask", "请求未找到");
           }
         }
 
         // Local timeout
-        outputDecision("ask", "本地超时，请在终端选择");
+        return outputDecision("ask", "本地超时，请在终端选择");
       }
 
       // If can't parse, fall through to terminal
-      outputDecision("ask");
+      return outputDecision("ask");
     }
 
     // Regular authorization request
@@ -266,7 +266,7 @@ async function main() {
 
     // If immediately resolved (Allow All session), return
     if (authResult.status === "resolved") {
-      outputDecision(authResult.decision!, "Auto-approved (Allow All)");
+      return outputDecision(authResult.decision!, "Auto-approved (Allow All)");
     }
 
     // Poll for decision
@@ -281,20 +281,20 @@ async function main() {
 
       if (pollResult.status === "resolved") {
         const msg = pollResult.decision === "allow" ? "Authorized via Telegram" : "Denied via Telegram";
-        outputDecision(pollResult.decision!, msg);
+        return outputDecision(pollResult.decision!, msg);
       }
 
       if (pollResult.status === "timeout") {
-        outputDecision("deny", "Authorization timeout");
+        return outputDecision("deny", "Authorization timeout");
       }
 
       if (pollResult.status === "not_found") {
-        outputDecision("deny", "Authorization request not found");
+        return outputDecision("deny", "Authorization request not found");
       }
     }
 
     // Local timeout - deny
-    outputDecision("deny", "Local timeout waiting for authorization");
+    return outputDecision("deny", "Local timeout waiting for authorization");
 
   } catch (error) {
     // Server unreachable - fall through to terminal prompt

@@ -1,15 +1,44 @@
 {
   "name": "claude-call",
   "version": "1.1.0",
-  "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5.0.0"
+  "description": "Remote control Claude Code via Telegram - tool authorization, question answering, and task injection",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "telegram",
+    "telegram-bot",
+    "anthropic",
+    "ai",
+    "automation",
+    "tool-authorization",
+    "remote-control",
+    "cli",
+    "bun",
+    "typescript",
+    "tmux",
+    "pty"
+  ],
+  "author": "Claude-Call Contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/breeze-64/claude-call#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/breeze-64/claude-call.git"
   },
-  "description": "Telegram button authorization and task injection for Claude Code",
+  "bugs": {
+    "url": "https://github.com/breeze-64/claude-call/issues"
+  },
+  "type": "module",
   "scripts": {
     "start": "bun run server/index.ts",
     "dev": "bun --watch run server/index.ts",
     "claude": "bun run wrapper/pty-wrapper.ts"
   },
-  "type": "module"
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
 }

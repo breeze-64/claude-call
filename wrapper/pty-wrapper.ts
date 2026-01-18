@@ -205,10 +205,12 @@ async function main(): Promise<void> {
   const tmuxSession = currentSession?.name || `claude-${Date.now().toString(36)}`;
 
   // Build claude command with arguments
+  // Use CLAUDE_PATH env var, or fall back to 'claude' (requires claude in PATH)
+  const claudePath = process.env.CLAUDE_PATH || "claude";
   const claudeArgs = process.argv.slice(2);
   const claudeCmd = claudeArgs.length > 0
-    ? `/opt/homebrew/bin/claude ${claudeArgs.join(" ")}`
-    : "/opt/homebrew/bin/claude";
+    ? `${claudePath} ${claudeArgs.join(" ")}`
+    : claudePath;
 
   console.log(`Starting claude in tmux session '${tmuxSession}'...\n`);
 

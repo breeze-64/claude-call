@@ -15,6 +15,7 @@ import {
   updateMessage,
   startPolling,
   sendTestMessage,
+  cleanupPendingTaskMessages,
 } from "./telegram";
 import {
   getPendingTasks,
@@ -285,10 +286,11 @@ async function main() {
   // Start Telegram polling
   startPolling();
 
-  // Start cleanup interval (requests and tasks)
+  // Start cleanup interval (requests, tasks, and pending messages)
   setInterval(() => {
     cleanupStale();
     cleanupTasks();
+    cleanupPendingTaskMessages();
   }, 60000);
 
   // Start HTTP server

@@ -24,11 +24,21 @@ import {
   type Session,
 } from "./task-queue";
 
-// Store pending task messages waiting for session selection
-const pendingTaskMessages = new Map<number, { text: string; messageId: number }>();
+// Store pending task messages waiting for session selection (with timestamp for cleanup)
+const pendingTaskMessages = new Map<number, { text: string; messageId: number; createdAt: number }>();
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
+// Pending task messages timeout: 5 minutes
+const PENDING_TASK_TIMEOUT = 5 * 60 * 1000;
+
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+if (!BOT_TOKEN || !CHAT_ID) {
+  console.error("Missing required environment variables: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID");
+  console.error("Please create a .env file based on .env.example");
+  process.exit(1);
+}
+
 const API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 let lastUpdateId = 0;
@@ -367,7 +377,25 @@ export async function processCallback(
   }
 
   // Handle authorization (format: action:requestId)
-  const [action, requestId] = data.split(":");
+  const parts = data.split(":");
+  if (parts.length !== 2) {
+    await answerCallbackQuery(callbackQuery.id, "Invalid callback data");
+    return;
+  }
+  const [action, requestId] = parts;
+
+  // Validate action
+  if (!["allow", "deny", "allowall"].includes(action)) {
+    await answerCallbackQuery(callbackQuery.id, "Unknown action");
+    return;
+  }
+
+  // Validate requestId format (UUID)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) {
+    await answerCallbackQuery(callbackQuery.id, "Invalid request ID");
+    return;
+  }
+
   const request = getRequest(requestId);
 
   if (!request) {
@@ -558,6 +586,23 @@ export async function sendTestMessage(): Promise<boolean> {
 }
 
 /**
+ * Clean up expired pending task messages
+ */
+export function cleanupPendingTaskMessages(): void {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [msgId, task] of pendingTaskMessages) {
+    if (now - task.createdAt > PENDING_TASK_TIMEOUT) {
+      pendingTaskMessages.delete(msgId);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`[Telegram] Cleaned up ${cleaned} expired pending task message(s)`);
+  }
+}
+
+/**
  * Process /sessions command - list active sessions
  */
 async function processSessionsCommand(message: TelegramMessage): Promise<void> {
@@ -579,8 +624,8 @@ async function processSessionsCommand(message: TelegramMessage): Promise<void> {
   }
 
   const sessionList = sessions.map((s, i) => {
-    const age = Math.round((Date.now() - s.createdAt) / 60000);
-    return `${i + 1}. *${s.name}* (\`${s.shortId}\`)\n   📂 ${s.cwd}\n   ⏱️ ${age} 分钟前创建`;
+    const createdTime = formatDateTime(s.createdAt);
+    return `${i + 1}. *${s.name}* (\`${s.shortId}\`)\n   📂 ${s.cwd}\n   ⏱️ ${createdTime}`;
   }).join("\n\n");
 
   await callApi("sendMessage", {
@@ -589,6 +634,20 @@ async function processSessionsCommand(message: TelegramMessage): Promise<void> {
     parse_mode: "Markdown",
     reply_to_message_id: message.message_id,
   });
+}
+
+/**
+ * Format timestamp to yyyy-mm-dd HH:MM:ss
+ */
+function formatDateTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 /**
@@ -601,8 +660,9 @@ function createSessionKeyboard(
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
 
   for (const session of sessions) {
+    const createdTime = formatDateTime(session.createdAt);
     rows.push([{
-      text: `📱 ${session.name}`,
+      text: `📱 ${session.name} (${createdTime})`,
       callback_data: `sess:${session.shortId}:${originalMsgId}`,
     }]);
   }
@@ -689,6 +749,7 @@ export async function processNewTaskMessage(
   pendingTaskMessages.set(message.message_id, {
     text: taskText,
     messageId: message.message_id,
+    createdAt: Date.now(),
   });
 
   const preview = taskText.length > 50 ? taskText.slice(0, 50) + "..." : taskText;

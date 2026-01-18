@@ -1,6 +1,15 @@
 # Claude-Call
 
-Claude Code 的完整 Telegram 集成 - 授权工具、回答问题、发送新任务，全部通过手机完成。
+> **通过 Telegram 远程控制 Claude Code** - 授权工具执行、回答问题、注入新任务，全部通过手机完成。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
+[![TypeScript](https://img.shields.io/badge/language-TypeScript-blue)](https://www.typescriptlang.org/)
+[![Claude Code](https://img.shields.io/badge/integrates%20with-Claude%20Code-purple)](https://claude.ai/code)
+
+[Claude Code](https://claude.ai/code)（Anthropic 官方 CLI 工具）的完整 Telegram 集成。授权工具、回答问题、发送新任务，全部通过手机完成。
+
+**关键词**: Claude Code, Telegram 机器人, 工具授权, 远程控制, AI 助手, Anthropic, CLI 集成, PreToolUse Hook, PTY Wrapper, tmux
 
 [English](./README.md) | 中文
 
@@ -89,7 +98,7 @@ Telegram 消息 → 服务器任务队列 → PTY 包装器轮询 /tasks/pending
 ### 1. 克隆并安装
 
 ```bash
-git clone https://github.com/yourusername/claude-call.git
+git clone https://github.com/breeze-64/claude-call.git
 cd claude-call
 bun install
 ```
