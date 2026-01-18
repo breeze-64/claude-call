@@ -20,6 +20,8 @@ interface PendingTask {
   sessionId: string;
   message: string;
   createdAt: number;
+  type?: "message" | "keystroke";  // Task type: message (default) or keystroke for PTY key injection
+  requestId?: string;               // Associated request ID (for AskUserQuestion answers)
 }
 
 interface Session {
@@ -103,25 +105,82 @@ async function acknowledgeTask(taskId: string): Promise<void> {
 
 /**
  * Inject a task using tmux send-keys
+ * Handles both regular message tasks and keystroke tasks differently
  */
 async function injectTask(tmuxSession: string, task: PendingTask): Promise<void> {
-  console.log(`\r\n[PTY] Injecting task: "${task.message.slice(0, 50)}..."\r\n`);
+  const isKeystroke = task.type === "keystroke";
+
+  if (isKeystroke) {
+    console.log(`\r\n[PTY] Injecting keystroke: "${task.message}"\r\n`);
+  } else {
+    console.log(`\r\n[PTY] Injecting task: "${task.message.slice(0, 50)}..."\r\n`);
+  }
 
   try {
-    // Use Bun.spawn instead of shell template to avoid variable escaping issues
-    const sendText = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "-l", task.message], {
-      stdout: "ignore",
-      stderr: "pipe",
-    });
-    await sendText.exited;
+    if (isKeystroke) {
+      // === KEYSTROKE INJECTION ===
+      // Small delay to ensure Claude Code UI is ready to receive input
+      await Bun.sleep(100);
 
-    const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
-      stdout: "ignore",
-      stderr: "pipe",
-    });
-    await sendEnter.exited;
+      // Check if it's a single digit (option selection in Claude Code UI)
+      const isNumericKeystroke = /^\d$/.test(task.message);
 
-    console.log(`[PTY] Task injected successfully\r\n`);
+      if (isNumericKeystroke) {
+        // Single digit - send directly without -l flag (no Enter needed)
+        // Claude Code's selection UI responds immediately to digit keys
+        const sendKey = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, task.message], {
+          stdout: "ignore",
+          stderr: "pipe",
+        });
+        const exitCode = await sendKey.exited;
+        if (exitCode !== 0) {
+          const stderr = await new Response(sendKey.stderr).text();
+          console.error(`[PTY] tmux send-keys failed (${exitCode}): ${stderr}`);
+          return;
+        }
+      } else {
+        // Custom text - send with -l flag for literal interpretation, then Enter
+        const sendText = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "-l", task.message], {
+          stdout: "ignore",
+          stderr: "pipe",
+        });
+        const textExitCode = await sendText.exited;
+        if (textExitCode !== 0) {
+          const stderr = await new Response(sendText.stderr).text();
+          console.error(`[PTY] tmux send-keys (text) failed (${textExitCode}): ${stderr}`);
+          return;
+        }
+
+        const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
+          stdout: "ignore",
+          stderr: "pipe",
+        });
+        const enterExitCode = await sendEnter.exited;
+        if (enterExitCode !== 0) {
+          const stderr = await new Response(sendEnter.stderr).text();
+          console.error(`[PTY] tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
+          return;
+        }
+      }
+
+      console.log(`[PTY] Keystroke injected successfully\r\n`);
+    } else {
+      // === REGULAR MESSAGE INJECTION ===
+      // Use Bun.spawn instead of shell template to avoid variable escaping issues
+      const sendText = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "-l", task.message], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      await sendText.exited;
+
+      const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      await sendEnter.exited;
+
+      console.log(`[PTY] Task injected successfully\r\n`);
+    }
   } catch (error) {
     console.error(`[PTY] Injection failed:`, error);
   }

@@ -18,6 +18,7 @@ import {
   addTask,
   addTaskToDefaultSession,
   addTaskToSession,
+  addKeystrokeTask,
   getAllSessions,
   getSession,
   getSessionCount,
@@ -374,6 +375,32 @@ export async function processCallback(
     const selectedOption = request.options?.find((o) => o.id === optionId);
     const optionLabel = selectedOption?.label || optionId;
 
+    // Map option ID (A, B, C...) to keystroke number (1, 2, 3...)
+    // This allows PTY to simulate user selecting an option in Claude Code's terminal UI
+    let keystroke: string;
+    if (/^[A-Z]$/.test(optionId)) {
+      // Single uppercase letter: A=1, B=2, C=3...
+      keystroke = String(optionId.charCodeAt(0) - 64);
+    } else if (/^\d+$/.test(optionId)) {
+      // Already numeric
+      keystroke = optionId;
+    } else {
+      console.warn(`[Telegram] Unexpected option ID format: ${optionId}, defaulting to "1"`);
+      keystroke = "1";
+    }
+
+    // Create keystroke task for PTY injection
+    // Note: request.sessionId is Claude Code's internal session ID, not PTY wrapper's session ID
+    // So we use the most recently active PTY session instead
+    const allSessions = getAllSessions();
+    if (allSessions.length > 0) {
+      const targetSession = allSessions[0];
+      addKeystrokeTask(targetSession.id, keystroke, requestId);
+      console.log(`[Telegram] Created keystroke task: "${keystroke}" for session ${targetSession.shortId}`);
+    } else {
+      console.warn(`[Telegram] No active PTY session, keystroke not sent`);
+    }
+
     resolveQuestionRequest(requestId, optionId);
     await updateMessage(request, `✅ *已选择: ${optionLabel}*`);
     await answerCallbackQuery(callbackQuery.id, `选择: ${optionLabel}`);
@@ -493,6 +520,27 @@ export async function processReplyMessage(
 
   const customText = message.text.trim();
 
+  // Validate custom text length
+  if (customText.length > 1000) {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: "⚠️ 输入过长 (最大 1000 字符)",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  // Create keystroke task for custom text input
+  // Use the most recently active PTY session
+  const allSessions = getAllSessions();
+  if (allSessions.length > 0) {
+    const targetSession = allSessions[0];
+    addKeystrokeTask(targetSession.id, customText, request.id);
+    console.log(`[Telegram] Created custom keystroke task for session ${targetSession.shortId}`);
+  } else {
+    console.warn(`[Telegram] No active PTY session, custom text keystroke not sent`);
+  }
+
   // Use special prefix to indicate custom input
   resolveQuestionRequest(request.id, `__CUSTOM__:${customText}`);
   await updateMessage(request, `✏️ *自定义输入: ${customText}*`);
@@ -585,6 +633,31 @@ export async function sendTestMessage(): Promise<boolean> {
     return true;
   } catch (error) {
     console.error("Failed to send test message:", error);
+    return false;
+  }
+}
+
+/**
+ * Send a notification message to Telegram
+ * Can be used to notify task completion, errors, or any other events
+ */
+export async function sendNotification(
+  message: string,
+  options?: {
+    parseMode?: "Markdown" | "HTML";
+    silent?: boolean;
+  }
+): Promise<boolean> {
+  try {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: message,
+      parse_mode: options?.parseMode || "Markdown",
+      disable_notification: options?.silent || false,
+    });
+    return true;
+  } catch (error) {
+    console.error("Failed to send notification:", error);
     return false;
   }
 }

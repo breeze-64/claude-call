@@ -12,6 +12,8 @@ export interface PendingTask {
   message: string;
   createdAt: number;
   acknowledged: boolean;
+  type?: "message" | "keystroke";  // Task type: message (default) or keystroke for PTY key injection
+  requestId?: string;               // Associated request ID (for AskUserQuestion answers)
 }
 
 export interface Session {
@@ -157,6 +159,35 @@ export function addTask(sessionId: string, message: string): PendingTask {
 }
 
 /**
+ * Add a keystroke task for PTY injection (for AskUserQuestion answers)
+ * Keystrokes are injected directly into the terminal without Enter key
+ */
+export function addKeystrokeTask(
+  sessionId: string,
+  keystroke: string,
+  requestId?: string
+): PendingTask {
+  const task: PendingTask = {
+    id: crypto.randomUUID(),
+    sessionId,
+    message: keystroke,
+    createdAt: Date.now(),
+    acknowledged: false,
+    type: "keystroke",
+    requestId,
+  };
+  tasks.set(task.id, task);
+  touchSession(sessionId);
+
+  const session = sessions.get(sessionId);
+  const sessionName = session?.name || sessionId.slice(0, 8);
+  console.log(
+    `[TaskQueue] Keystroke task added for ${sessionName}: "${keystroke}"`
+  );
+  return task;
+}
+
+/**
  * Add task to a session (by short ID or full ID)
  * Returns null if session not found
  */
@@ -191,11 +222,18 @@ export function addTaskToDefaultSession(message: string): {
 
 /**
  * Get all pending (unacknowledged) tasks for a specific session
+ * Keystroke tasks are prioritized over regular message tasks
  */
 export function getPendingTasks(sessionId: string): PendingTask[] {
   const pending = Array.from(tasks.values())
     .filter((t) => t.sessionId === sessionId && !t.acknowledged)
-    .sort((a, b) => a.createdAt - b.createdAt); // Oldest first
+    .sort((a, b) => {
+      // Keystroke tasks first (higher priority for responsive UI interaction)
+      if (a.type === "keystroke" && b.type !== "keystroke") return -1;
+      if (a.type !== "keystroke" && b.type === "keystroke") return 1;
+      // Then by creation time (oldest first)
+      return a.createdAt - b.createdAt;
+    });
 
   if (pending.length > 0) {
     console.log(
