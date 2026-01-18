@@ -13,6 +13,10 @@ Full Telegram integration for [Claude Code](https://claude.ai/code) (Anthropic's
 
 ## Why Claude-Call? | 为什么选择 Claude-Call?
 
+<p align="center">
+  <img src="docs/images/before-after.svg" alt="Before vs After" width="100%">
+</p>
+
 - **Stay Mobile, Stay Productive** | **移动办公，效率不减** - Approve Claude's actions from anywhere - meetings, commute, or coffee breaks
 - **No More Waiting** | **告别等待** - Claude keeps working while you handle approvals on the go
 - **Multi-task Like a Pro** | **多任务处理** - Run multiple Claude sessions, control them all from one chat
@@ -21,6 +25,26 @@ Full Telegram integration for [Claude Code](https://claude.ai/code) (Anthropic's
 **Keywords | 关键词**: Claude Code, Telegram Bot, Tool Authorization, Remote Control, AI Assistant, Anthropic, CLI Integration, AI Coding, Productivity, Efficiency, 效率工具, 远程控制, AI编程, 自动化, 提效神器
 
 English | [中文](./README.zh-CN.md)
+
+## Screenshots | 截图
+
+<p align="center">
+  <img src="docs/images/telegram-auth.svg" alt="Telegram Authorization" width="300">
+  <br>
+  <em>Telegram Authorization Interface | Telegram 授权界面</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/workflow.svg" alt="Workflow" width="100%">
+  <br>
+  <em>How it works | 工作流程</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/multi-session.svg" alt="Multi-Session" width="100%">
+  <br>
+  <em>Multi-Session Management | 多会话管理</em>
+</p>
 
 ## Features
 

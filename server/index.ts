@@ -60,14 +60,40 @@ async function handleAuthorize(req: Request): Promise<Response> {
     return jsonResponse({ error: "Invalid JSON" }, 400);
   }
 
-  const { sessionId, toolName, toolInput, cwd, type, question, options } = body;
+  const { sessionId, toolInput, cwd, type, question, options } = body;
+  let { toolName } = body;
 
   // Log request details for debugging
   console.log(`[Authorize] Received: toolName=${toolName}, sessionId=${sessionId?.slice(0, 8)}, type=${type || "auth"}`);
+  if (toolInput) {
+    console.log(`[Authorize] toolInput keys: ${Object.keys(toolInput).join(", ")}`);
+  }
 
-  if (!sessionId || !toolName) {
-    console.log(`[Authorize] Missing fields: sessionId=${!!sessionId}, toolName=${!!toolName}`);
-    return jsonResponse({ error: "Missing required fields" }, 400);
+  if (!sessionId) {
+    console.log(`[Authorize] Missing sessionId`);
+    return jsonResponse({ error: "Missing sessionId" }, 400);
+  }
+
+  // Infer toolName from toolInput if missing
+  if (!toolName) {
+    console.log(`[Authorize] toolName is missing, attempting to infer from toolInput`);
+    if (toolInput) {
+      if ("command" in toolInput) {
+        toolName = "Bash";
+        console.log(`[Authorize] Inferred toolName as "Bash" from command field`);
+      } else if ("file_path" in toolInput && ("new_string" in toolInput || "old_string" in toolInput)) {
+        toolName = "Edit";
+        console.log(`[Authorize] Inferred toolName as "Edit" from file_path + new_string/old_string`);
+      } else if ("file_path" in toolInput && "content" in toolInput) {
+        toolName = "Write";
+        console.log(`[Authorize] Inferred toolName as "Write" from file_path + content`);
+      } else if ("questions" in toolInput) {
+        toolName = "AskUserQuestion";
+        console.log(`[Authorize] Inferred toolName as "AskUserQuestion" from questions field`);
+      } else {
+        console.log(`[Authorize] Could not infer toolName, using "未知工具"`);
+      }
+    }
   }
 
   // Check if this is a question request

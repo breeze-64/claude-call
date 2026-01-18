@@ -118,9 +118,13 @@ function formatAuthMessage(request: PendingRequest): string {
   const toolName = request.toolName || "未知工具";
   const details = formatToolInput(toolName, request.toolInput);
 
+  // Extract description if present (Claude Code often includes this for Bash commands)
+  const description = request.toolInput?.description as string | undefined;
+  const descriptionLine = description ? `\n📝 描述: ${description}` : "";
+
   return `🔐 *Claude Code 授权请求*
 
-📋 工具: \`${toolName}\`
+📋 工具: \`${toolName}\`${descriptionLine}
 🔑 会话: \`${sessionShort}...\`
 ${request.cwd ? `📂 目录: \`${request.cwd}\`` : ""}
 

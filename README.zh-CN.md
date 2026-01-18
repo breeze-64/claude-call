@@ -22,6 +22,30 @@
 
 [English](./README.md) | 中文
 
+## 截图 | Screenshots
+
+<p align="center">
+  <img src="docs/images/before-after.svg" alt="Before vs After" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/images/telegram-auth.svg" alt="Telegram 授权界面" width="300">
+  <br>
+  <em>Telegram 授权界面 | Telegram Authorization Interface</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/workflow.svg" alt="工作流程" width="100%">
+  <br>
+  <em>工作流程 | How it works</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/multi-session.svg" alt="多会话管理" width="100%">
+  <br>
+  <em>多会话管理 | Multi-Session Management</em>
+</p>
+
 ## 功能特点
 
 ### 工具授权

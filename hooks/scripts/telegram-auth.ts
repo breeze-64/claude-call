@@ -161,13 +161,38 @@ async function main() {
     input = JSON.parse(inputText);
   } catch {
     // Invalid input - allow by default
+    console.error(`[claude-call] Failed to parse input JSON: ${inputText.slice(0, 200)}`);
     return outputDecision("allow", "Invalid hook input");
   }
 
-  const { session_id, tool_name, tool_input, cwd } = input;
+  // Debug: Log the full input to understand what Claude Code sends
+  console.error(`[claude-call] Hook input: tool_name=${input.tool_name}, event=${input.hook_event_name}, has_tool_input=${!!input.tool_input}`);
+  if (!input.tool_name) {
+    console.error(`[claude-call] WARNING: tool_name is missing! Full input: ${JSON.stringify(input).slice(0, 500)}`);
+  }
+
+  const { session_id, tool_input, cwd } = input;
+  let { tool_name } = input;
+
+  // Infer tool_name from tool_input if missing
+  if (!tool_name && tool_input) {
+    if ("command" in tool_input) {
+      tool_name = "Bash";
+      console.error(`[claude-call] Inferred tool_name as "Bash" from command field`);
+    } else if ("file_path" in tool_input && ("new_string" in tool_input || "old_string" in tool_input)) {
+      tool_name = "Edit";
+      console.error(`[claude-call] Inferred tool_name as "Edit"`);
+    } else if ("file_path" in tool_input && "content" in tool_input) {
+      tool_name = "Write";
+      console.error(`[claude-call] Inferred tool_name as "Write"`);
+    } else if ("questions" in tool_input) {
+      tool_name = "AskUserQuestion";
+      console.error(`[claude-call] Inferred tool_name as "AskUserQuestion"`);
+    }
+  }
 
   // Skip safe tools
-  if (SKIP_TOOLS.has(tool_name)) {
+  if (tool_name && SKIP_TOOLS.has(tool_name)) {
     return outputDecision("allow");
   }
 
