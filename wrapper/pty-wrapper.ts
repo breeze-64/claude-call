@@ -108,9 +108,19 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<void>
   console.log(`\r\n[PTY] Injecting task: "${task.message.slice(0, 50)}..."\r\n`);
 
   try {
-    // Use tmux send-keys to send the message and Enter
-    await $`tmux send-keys -t ${tmuxSession} -l ${task.message}`.quiet();
-    await $`tmux send-keys -t ${tmuxSession} Enter`.quiet();
+    // Use Bun.spawn instead of shell template to avoid variable escaping issues
+    const sendText = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "-l", task.message], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    await sendText.exited;
+
+    const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    await sendEnter.exited;
+
     console.log(`[PTY] Task injected successfully\r\n`);
   } catch (error) {
     console.error(`[PTY] Injection failed:`, error);
@@ -216,11 +226,15 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Set environment variables in the session
+  // Set environment variables and options in the session
   try {
     await $`tmux set-environment -t ${tmuxSession} TERM xterm-256color`.quiet();
     await $`tmux set-environment -t ${tmuxSession} COLORTERM truecolor`.quiet();
     await $`tmux set-environment -t ${tmuxSession} CLAUDE_CALL_SERVER_URL ${SERVER_URL}`.quiet();
+    // Disable mouse to prevent flickering issues
+    await $`tmux set-option -t ${tmuxSession} mouse off`.quiet();
+    // Disable status bar for cleaner display
+    await $`tmux set-option -t ${tmuxSession} status off`.quiet();
   } catch {
     // Ignore
   }

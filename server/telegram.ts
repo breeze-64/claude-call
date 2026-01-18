@@ -54,14 +54,45 @@ async function callApi<T>(method: string, body?: object): Promise<T> {
  * Format tool input for display
  */
 function formatToolInput(toolName: string, toolInput: Record<string, unknown>): string {
+  // Handle known tools
   if (toolName === "Bash") {
     const cmd = String(toolInput.command || "");
     const truncated = cmd.length > 500 ? cmd.slice(0, 500) + "..." : cmd;
     return "```\n" + truncated + "\n```";
   }
 
+  if (toolName === "Edit" || toolName === "Write") {
+    const filePath = String(toolInput.file_path || "");
+    const content = String(toolInput.new_string || toolInput.content || "");
+    const preview = content.length > 200 ? content.slice(0, 200) + "..." : content;
+    return `📄 文件: \`${filePath}\`\n\`\`\`\n${preview}\n\`\`\``;
+  }
+
   if (toolInput.file_path) {
-    return `\`${toolInput.file_path}\``;
+    return `📄 文件: \`${toolInput.file_path}\``;
+  }
+
+  // For unknown tools or when we need more details, show full content
+  if (!toolName || toolName === "未知工具") {
+    // Try to infer what the tool might be doing
+    const keys = Object.keys(toolInput);
+    let details = `📋 *请求内容:*\n`;
+
+    // Show each field with better formatting
+    for (const key of keys.slice(0, 10)) { // Limit to 10 fields
+      const value = toolInput[key];
+      const valueStr = typeof value === "string"
+        ? value
+        : JSON.stringify(value);
+      const truncated = valueStr.length > 300 ? valueStr.slice(0, 300) + "..." : valueStr;
+      details += `\n*${key}:*\n\`\`\`\n${truncated}\n\`\`\``;
+    }
+
+    if (keys.length > 10) {
+      details += `\n_...还有 ${keys.length - 10} 个字段_`;
+    }
+
+    return details;
   }
 
   const json = JSON.stringify(toolInput, null, 2);
@@ -74,13 +105,14 @@ function formatToolInput(toolName: string, toolInput: Record<string, unknown>): 
  */
 function formatAuthMessage(request: PendingRequest): string {
   const sessionShort = request.sessionId.slice(0, 8);
-  const details = formatToolInput(request.toolName, request.toolInput);
+  const toolName = request.toolName || "未知工具";
+  const details = formatToolInput(toolName, request.toolInput);
 
-  return `🔐 *Tool Authorization Request*
+  return `🔐 *Claude Code 授权请求*
 
-📋 Tool: \`${request.toolName}\`
-🔑 Session: \`${sessionShort}...\`
-${request.cwd ? `📂 Dir: \`${request.cwd}\`` : ""}
+📋 工具: \`${toolName}\`
+🔑 会话: \`${sessionShort}...\`
+${request.cwd ? `📂 目录: \`${request.cwd}\`` : ""}
 
 ${details}`;
 }

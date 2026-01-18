@@ -61,7 +61,11 @@ async function handleAuthorize(req: Request): Promise<Response> {
 
   const { sessionId, toolName, toolInput, cwd, type, question, options } = body;
 
+  // Log request details for debugging
+  console.log(`[Authorize] Received: toolName=${toolName}, sessionId=${sessionId?.slice(0, 8)}, type=${type || "auth"}`);
+
   if (!sessionId || !toolName) {
+    console.log(`[Authorize] Missing fields: sessionId=${!!sessionId}, toolName=${!!toolName}`);
     return jsonResponse({ error: "Missing required fields" }, 400);
   }
 
