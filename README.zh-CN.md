@@ -196,6 +196,120 @@ AUTH_TIMEOUT_MS=30000
 }
 ```
 
+## 全局安装（可选）
+
+为了更专业的生产级配置，你可以将 PTY 包装器安装为全局命令。这样可以在任何目录下运行 `claude-call`。
+
+### 为什么需要全局安装？
+
+| 配置方式 | 命令 | 限制 |
+|---------|------|------|
+| 默认 | `bun run claude` | 必须在项目目录下运行 |
+| **全局** | `claude-call` | **任意目录都可运行** |
+
+### 前置条件
+
+确保你已完成基础安装：
+- [Bun](https://bun.sh) 已安装且在 PATH 中
+- 已克隆本仓库
+
+### 安装步骤
+
+首先，设置 claude-call 目录的变量（根据你的实际路径调整）：
+
+```bash
+# 设置为你实际的 claude-call 目录路径
+CLAUDE_CALL_DIR="$HOME/code/claude-call"
+```
+
+**步骤 1：验证源文件存在**
+```bash
+ls "$CLAUDE_CALL_DIR/wrapper/pty-wrapper.ts" || echo "错误：文件未找到，请检查 CLAUDE_CALL_DIR 路径。"
+```
+
+**步骤 2：创建专用目录并复制 PTY 包装器**
+```bash
+mkdir -p ~/.claude-call
+cp "$CLAUDE_CALL_DIR/wrapper/pty-wrapper.ts" ~/.claude-call/
+```
+
+**步骤 3：创建 bin 目录**
+```bash
+mkdir -p ~/bin
+```
+
+**步骤 4：创建全局命令脚本**
+```bash
+cat > ~/bin/claude-call << 'EOF'
+#!/bin/bash
+export CLAUDE_CALL_SERVER_URL="${CLAUDE_CALL_SERVER_URL:-http://localhost:3847}"
+exec bun run "$HOME/.claude-call/pty-wrapper.ts" "$@"
+EOF
+```
+
+**步骤 5：添加执行权限**
+```bash
+chmod +x ~/bin/claude-call
+```
+
+**步骤 6：将 ~/bin 加入 PATH**
+
+**zsh**（macOS 默认）：
+```bash
+grep -q '$HOME/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+```
+
+**bash**：
+```bash
+grep -q '$HOME/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+```
+
+**步骤 7：使配置生效**
+
+打开**新的终端窗口**，或运行：
+```bash
+# zsh 用户
+source ~/.zshrc
+
+# bash 用户
+source ~/.bashrc
+```
+
+### 验证安装
+
+```bash
+# 应输出: /Users/yourname/bin/claude-call（或类似路径）
+which claude-call
+
+# 应显示脚本内容
+cat ~/bin/claude-call
+
+# 应显示 pty-wrapper.ts 文件
+ls -la ~/.claude-call/
+```
+
+### 全局安装后的使用方式
+
+```bash
+# 终端 1：启动服务器
+cd "$CLAUDE_CALL_DIR" && bun run start
+# 或者直接使用路径：
+# cd ~/code/claude-call && bun run start
+
+# 终端 2：在任意目录运行
+cd ~/my-project
+claude-call
+```
+
+### 更新
+
+当你更新了仓库后，同步 `pty-wrapper.ts` 到全局位置：
+```bash
+cp "$CLAUDE_CALL_DIR/wrapper/pty-wrapper.ts" ~/.claude-call/
+# 或使用完整路径：
+# cp ~/code/claude-call/wrapper/pty-wrapper.ts ~/.claude-call/
+```
+
 ## 使用方法
 
 ### 基础：仅工具授权

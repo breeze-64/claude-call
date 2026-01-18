@@ -196,6 +196,120 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+## Global Installation (Optional)
+
+For a production-grade setup, you can install the PTY wrapper as a global command. This allows you to run `claude-call` from any directory.
+
+### Why Global Installation?
+
+| Setup | Command | Limitation |
+|-------|---------|------------|
+| Default | `bun run claude` | Must run from project directory |
+| **Global** | `claude-call` | **Run from anywhere** |
+
+### Prerequisites
+
+Ensure you have completed the basic installation first:
+- [Bun](https://bun.sh) is installed and in your PATH
+- You have cloned this repository
+
+### Installation Steps
+
+First, set a variable for your claude-call directory (adjust the path to match your setup):
+
+```bash
+# Set this to your actual claude-call directory path
+CLAUDE_CALL_DIR="$HOME/code/claude-call"
+```
+
+**Step 1: Verify the source file exists**
+```bash
+ls "$CLAUDE_CALL_DIR/wrapper/pty-wrapper.ts" || echo "ERROR: File not found. Check your CLAUDE_CALL_DIR path."
+```
+
+**Step 2: Create dedicated directory and copy PTY wrapper**
+```bash
+mkdir -p ~/.claude-call
+cp "$CLAUDE_CALL_DIR/wrapper/pty-wrapper.ts" ~/.claude-call/
+```
+
+**Step 3: Create bin directory**
+```bash
+mkdir -p ~/bin
+```
+
+**Step 4: Create global command script**
+```bash
+cat > ~/bin/claude-call << 'EOF'
+#!/bin/bash
+export CLAUDE_CALL_SERVER_URL="${CLAUDE_CALL_SERVER_URL:-http://localhost:3847}"
+exec bun run "$HOME/.claude-call/pty-wrapper.ts" "$@"
+EOF
+```
+
+**Step 5: Add execute permission**
+```bash
+chmod +x ~/bin/claude-call
+```
+
+**Step 6: Add ~/bin to PATH**
+
+For **zsh** (default on macOS):
+```bash
+grep -q '$HOME/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+```
+
+For **bash**:
+```bash
+grep -q '$HOME/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+```
+
+**Step 7: Apply changes**
+
+Open a **new terminal window**, or run:
+```bash
+# For zsh
+source ~/.zshrc
+
+# For bash
+source ~/.bashrc
+```
+
+### Verify Installation
+
+```bash
+# Should output: /Users/yourname/bin/claude-call (or similar)
+which claude-call
+
+# Should show the script content
+cat ~/bin/claude-call
+
+# Should show the pty-wrapper.ts file
+ls -la ~/.claude-call/
+```
+
+### Usage After Global Installation
+
+```bash
+# Terminal 1: Start the server
+cd "$CLAUDE_CALL_DIR" && bun run start
+# Or if you saved CLAUDE_CALL_DIR in your shell config, just:
+# cd ~/code/claude-call && bun run start
+
+# Terminal 2: Run from ANY directory
+cd ~/my-project
+claude-call
+```
+
+### Updating
+
+When you update the repository, sync `pty-wrapper.ts` to the global location:
+```bash
+cp "$CLAUDE_CALL_DIR/wrapper/pty-wrapper.ts" ~/.claude-call/
+# Or with explicit path:
+# cp ~/code/claude-call/wrapper/pty-wrapper.ts ~/.claude-call/
+```
+
 ## Usage
 
 ### Basic: Tool Authorization Only
