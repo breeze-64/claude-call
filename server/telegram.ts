@@ -5,6 +5,8 @@ import type {
   TelegramMessage,
   QuestionOption,
 } from "./types";
+import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import {
   getRequest,
   getRequestByMessageId,
@@ -585,6 +587,9 @@ export async function pollUpdates(): Promise<void> {
         } else if (update.message.text?.startsWith("/sessions")) {
           // /sessions command → list active sessions
           await processSessionsCommand(update.message);
+        } else if (update.message.text?.startsWith("/claude-call") || update.message.text?.startsWith("/claude_call")) {
+          // /claude-call or /claude_call command → start new Claude session in date folder
+          await processClaudeCallCommand(update.message);
         } else if (update.message.text && !update.message.text.startsWith("/")) {
           // Plain text message (not a command) → new task for PTY injection
           await processNewTaskMessage(update.message);
@@ -633,6 +638,26 @@ export async function sendTestMessage(): Promise<boolean> {
     return true;
   } catch (error) {
     console.error("Failed to send test message:", error);
+    return false;
+  }
+}
+
+/**
+ * Set up bot commands for Telegram command menu
+ * This enables "/" autocomplete in Telegram
+ */
+export async function setupBotCommands(): Promise<boolean> {
+  try {
+    await callApi("setMyCommands", {
+      commands: [
+        { command: "claude_call", description: "启动新的 Claude Code 会话" },
+        { command: "sessions", description: "查看所有活跃会话" },
+      ],
+    });
+    console.log("✓ Bot commands registered");
+    return true;
+  } catch (error) {
+    console.error("Failed to set bot commands:", error);
     return false;
   }
 }
@@ -745,6 +770,186 @@ function createSessionKeyboard(
   }
 
   return { inline_keyboard: rows };
+}
+
+/**
+ * Maximum concurrent sessions allowed
+ */
+const MAX_CONCURRENT_SESSIONS = 5;
+
+/**
+ * Session registration timeout in milliseconds
+ */
+const SESSION_REGISTRATION_TIMEOUT_MS = 15000;
+
+/**
+ * Session registration poll interval in milliseconds
+ */
+const SESSION_POLL_INTERVAL_MS = 500;
+
+/**
+ * Wait for a session to register with matching cwd
+ * Returns session or null if timeout
+ */
+async function waitForSessionRegistration(
+  expectedCwd: string,
+  maxWaitMs: number
+): Promise<Session | null> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const sessions = getAllSessions();
+    const found = sessions.find((s) => s.cwd === expectedCwd);
+    if (found) {
+      return found;
+    }
+    await Bun.sleep(SESSION_POLL_INTERVAL_MS);
+  }
+
+  return null;
+}
+
+/**
+ * Extract error message from unknown error type
+ */
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+/**
+ * Process /claude-call command - start Claude Code in date folder
+ */
+async function processClaudeCallCommand(message: TelegramMessage): Promise<void> {
+  // Verify it's from the correct chat
+  if (String(message.chat.id) !== CHAT_ID) {
+    return;
+  }
+
+  // Check session limit
+  const currentSessionCount = getSessionCount();
+  if (currentSessionCount >= MAX_CONCURRENT_SESSIONS) {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: `❌ *会话已满*\n\n当前活跃会话: ${currentSessionCount}/${MAX_CONCURRENT_SESSIONS}\n\n请先关闭一些会话后再试`,
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  // Check base directory is configured
+  const baseDir = process.env.CLAUDE_CALL_BASE_DIR;
+  if (!baseDir) {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: "❌ *配置错误*\n\n请在 .env 文件中设置 `CLAUDE_CALL_BASE_DIR`",
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  // Create date folder name (YYYYMMDD)
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const dateFolder = `${year}${month}${day}`;
+  const targetDir = `${baseDir}/${dateFolder}`;
+
+  // Validate wrapper path exists
+  const wrapperPath = `${process.cwd()}/wrapper/pty-wrapper.ts`;
+  if (!existsSync(wrapperPath)) {
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: `❌ *配置错误*\n\nPTY wrapper 文件不存在: \`${wrapperPath}\``,
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  // Create directory (mkdir with recursive is idempotent)
+  try {
+    await mkdir(targetDir, { recursive: true });
+    console.log(`[Telegram] Ensured directory exists: ${targetDir}`);
+  } catch (error) {
+    console.error(`[Telegram] Failed to create directory:`, error);
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: `❌ *目录创建失败*\n\n\`${getErrorMessage(error)}\``,
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
+    return;
+  }
+
+  // Send starting message
+  const startingMsg = await callApi<{ message_id: number }>("sendMessage", {
+    chat_id: CHAT_ID,
+    text: `🚀 *正在启动 Claude Code...*\n\n📂 目录: \`${targetDir}\`\n⏳ 等待会话注册...`,
+    parse_mode: "Markdown",
+    reply_to_message_id: message.message_id,
+  });
+
+  // Spawn PTY wrapper process
+  let proc: ReturnType<typeof Bun.spawn> | null = null;
+  try {
+    const serverUrl = process.env.CLAUDE_CALL_SERVER_URL || "http://localhost:3847";
+
+    // Spawn process in headless mode and keep handle for cleanup
+    proc = Bun.spawn(["bun", "run", wrapperPath, "--headless"], {
+      cwd: targetDir,
+      env: {
+        ...process.env,
+        CLAUDE_CALL_SERVER_URL: serverUrl,
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+
+    console.log(`[Telegram] Spawned PTY wrapper (pid: ${proc.pid}) for ${targetDir}`);
+  } catch (error) {
+    console.error(`[Telegram] Failed to spawn wrapper:`, error);
+    await callApi("editMessageText", {
+      chat_id: CHAT_ID,
+      message_id: startingMsg.message_id,
+      text: `❌ *启动失败*\n\n\`${getErrorMessage(error)}\``,
+      parse_mode: "Markdown",
+    });
+    return;
+  }
+
+  // Wait for session to register
+  const session = await waitForSessionRegistration(targetDir, SESSION_REGISTRATION_TIMEOUT_MS);
+
+  if (session) {
+    await callApi("editMessageText", {
+      chat_id: CHAT_ID,
+      message_id: startingMsg.message_id,
+      text: `✅ *Claude Code 已启动*\n\n📂 目录: \`${targetDir}\`\n🔑 会话: \`${session.shortId}\`\n📋 名称: ${session.name}\n\n_现在可以发送任务了!_`,
+      parse_mode: "Markdown",
+    });
+  } else {
+    // Timeout - kill the orphaned process to prevent zombies
+    if (proc && proc.pid) {
+      try {
+        proc.kill();
+        console.log(`[Telegram] Killed orphaned process (pid: ${proc.pid})`);
+      } catch {
+        // Process may have already exited
+      }
+    }
+
+    await callApi("editMessageText", {
+      chat_id: CHAT_ID,
+      message_id: startingMsg.message_id,
+      text: `⚠️ *会话注册超时*\n\n📂 目录: \`${targetDir}\`\n\n进程已清理，请检查配置后重试`,
+      parse_mode: "Markdown",
+    });
+  }
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   updateMessage,
   startPolling,
   sendTestMessage,
+  setupBotCommands,
   cleanupPendingTaskMessages,
 } from "./telegram";
 import {
@@ -320,6 +321,9 @@ async function main() {
     process.exit(1);
   }
   console.log("✓ Telegram connection verified");
+
+  // Set up bot commands for "/" autocomplete
+  await setupBotCommands();
 
   // Start Telegram polling
   startPolling();

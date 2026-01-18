@@ -260,13 +260,16 @@ async function main(): Promise<void> {
     console.log("  Run 'bun run start' to start the server\n");
   }
 
+  // Check for headless mode (for Telegram /claude-call command)
+  const isHeadless = process.argv.includes("--headless");
+
   // Determine tmux session name
   const tmuxSession = currentSession?.name || `claude-${Date.now().toString(36)}`;
 
-  // Build claude command with arguments
+  // Build claude command with arguments (filter out --headless)
   // Use CLAUDE_PATH env var, or fall back to 'claude' (requires claude in PATH)
   const claudePath = process.env.CLAUDE_PATH || "claude";
-  const claudeArgs = process.argv.slice(2);
+  const claudeArgs = process.argv.slice(2).filter(arg => arg !== "--headless");
   const claudeCmd = claudeArgs.length > 0
     ? `${claudePath} ${claudeArgs.join(" ")}`
     : claudePath;
@@ -305,24 +308,35 @@ async function main(): Promise<void> {
     startTaskPolling(currentSession.id, tmuxSession);
   }
 
-  // Attach to the session
-  const proc = Bun.spawn(["tmux", "attach-session", "-t", tmuxSession], {
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-    env: {
-      ...process.env,
-      TERM: "xterm-256color",
-    },
-  });
+  if (isHeadless) {
+    // Headless mode: don't attach, just keep running for task polling
+    console.log(`[PTY] Running in headless mode, session: ${tmuxSession}`);
+    console.log(`[PTY] Use 'tmux attach-session -t ${tmuxSession}' to attach manually`);
 
-  // Wait for the attach to exit
-  const exitCode = await proc.exited;
+    // Keep process alive for task polling
+    while (!isShuttingDown) {
+      await Bun.sleep(5000);
+    }
+  } else {
+    // Interactive mode: attach to the session
+    const proc = Bun.spawn(["tmux", "attach-session", "-t", tmuxSession], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+      },
+    });
 
-  // Cleanup
-  await cleanup(tmuxSession);
+    // Wait for the attach to exit
+    const exitCode = await proc.exited;
 
-  process.exit(exitCode);
+    // Cleanup
+    await cleanup(tmuxSession);
+
+    process.exit(exitCode);
+  }
 }
 
 /**

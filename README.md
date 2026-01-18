@@ -71,6 +71,12 @@ English | [中文](./README.zh-CN.md)
 - **Direct Targeting**: Use `@shortId` prefix to send to specific session
 - **Session Commands**: `/sessions` to list all active sessions
 
+### Remote Session Launch (New)
+- **Telegram Command**: `/claude_call` to start a new Claude Code session remotely
+- **Auto Date Folder**: Sessions are created in date-based folders (`YYYYMMDD`)
+- **Headless Mode**: Sessions run in background, attachable anytime via tmux
+- **Session Limit**: Maximum 5 concurrent sessions (configurable)
+
 ## Architecture
 
 ```
@@ -103,6 +109,7 @@ English | [中文](./README.zh-CN.md)
 | Button callback (`callback_query`) | `processCallback()` | Tool authorization decisions |
 | Reply to bot message | `processReplyMessage()` | Custom text input for questions |
 | `/sessions` command | `processSessionsCommand()` | List all active sessions |
+| `/claude_call` command | `processClaudeCallCommand()` | Start new Claude session remotely |
 | Plain text message | `processNewTaskMessage()` | New task for PTY injection |
 | `@shortId message` | `processNewTaskMessage()` | Task to specific session |
 
@@ -359,12 +366,38 @@ From Telegram:
 - **Direct target**: Send `@abc12345 your task here` to target specific session
 - **Auto-select**: When multiple sessions exist, bot shows selection buttons
 
+### Remote Session Launch via Telegram
+
+Start Claude Code sessions directly from Telegram using the `/claude_call` command:
+
+1. **Configure base directory** in `.env`:
+   ```env
+   CLAUDE_CALL_BASE_DIR=/path/to/your/work/directory
+   ```
+
+2. **Send `/claude_call`** in Telegram to start a new session
+   - A new folder with today's date (`YYYYMMDD`) is created under the base directory
+   - Claude Code starts in headless mode (no terminal attachment)
+   - You'll receive a confirmation with the session ID
+
+3. **View running sessions**:
+   ```bash
+   # List all tmux sessions
+   tmux ls
+
+   # Attach to a specific session (replace with actual session name)
+   tmux attach-session -t claude-xxxxxx
+   ```
+
+4. **Detach without stopping**: Press `Ctrl+b` then `d` to detach while keeping the session running
+
 ### tmux Controls
 
 Since the PTY wrapper uses tmux:
 - **Scroll up**: `Ctrl+b` then `[`, use arrow keys, `q` to exit
 - **Detach**: `Ctrl+b` then `d`
 - **Reattach**: `tmux attach -t <session-name>`
+- **List sessions**: `tmux ls`
 
 ## API Reference
 
@@ -422,6 +455,7 @@ GET /poll/:requestId
 | `AUTH_SERVER_PORT` | 3847 | HTTP server port |
 | `AUTH_TIMEOUT_MS` | 30000 | Authorization timeout in ms |
 | `CLAUDE_CALL_SERVER_URL` | `http://localhost:3847` | Server URL for PTY wrapper |
+| `CLAUDE_CALL_BASE_DIR` | - | Base directory for `/claude_call` command (required for remote launch) |
 
 ### File Structure
 

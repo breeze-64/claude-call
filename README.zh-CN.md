@@ -71,6 +71,12 @@
 - **直接定向**：使用 `@shortId` 前缀发送到特定会话
 - **会话命令**：`/sessions` 列出所有活跃会话
 
+### 远程启动会话（新功能）
+- **Telegram 命令**：`/claude_call` 远程启动新的 Claude Code 会话
+- **自动日期文件夹**：会话在日期文件夹中创建（`YYYYMMDD`）
+- **后台模式**：会话后台运行，随时可通过 tmux 连接查看
+- **会话限制**：最多 5 个并发会话（可配置）
+
 ## 系统架构
 
 ```
@@ -103,6 +109,7 @@
 | 按钮回调 (`callback_query`) | `processCallback()` | 工具授权决策 |
 | 回复机器人消息 | `processReplyMessage()` | 问题的自定义文本输入 |
 | `/sessions` 命令 | `processSessionsCommand()` | 列出所有活跃会话 |
+| `/claude_call` 命令 | `processClaudeCallCommand()` | 远程启动新 Claude 会话 |
 | 普通文本消息 | `processNewTaskMessage()` | 新任务的 PTY 注入 |
 | `@shortId 消息` | `processNewTaskMessage()` | 发送到特定会话 |
 
@@ -359,12 +366,38 @@ bun run claude  # 注册为会话，如 "claude-def456" (shortId: def45678)
 - **直接定向**：发送 `@abc12345 你的任务` 发送到特定会话
 - **自动选择**：多会话时，机器人显示选择按钮
 
+### 通过 Telegram 远程启动会话
+
+使用 `/claude_call` 命令直接从 Telegram 启动 Claude Code 会话：
+
+1. **在 `.env` 中配置基础目录**：
+   ```env
+   CLAUDE_CALL_BASE_DIR=/path/to/your/work/directory
+   ```
+
+2. **在 Telegram 中发送 `/claude_call`** 启动新会话
+   - 在基础目录下创建以当天日期命名的文件夹（`YYYYMMDD`）
+   - Claude Code 以后台模式启动（不自动连接终端）
+   - 你会收到包含会话 ID 的确认消息
+
+3. **查看运行中的会话**：
+   ```bash
+   # 列出所有 tmux 会话
+   tmux ls
+
+   # 连接到特定会话（用实际的会话名替换）
+   tmux attach-session -t claude-xxxxxx
+   ```
+
+4. **分离但不停止**：按 `Ctrl+b` 然后 `d` 可以分离会话，会话继续在后台运行
+
 ### tmux 控制
 
 由于 PTY 包装器使用 tmux：
 - **向上滚动**：`Ctrl+b` 然后 `[`，使用方向键，`q` 退出
 - **分离会话**：`Ctrl+b` 然后 `d`
 - **重新连接**：`tmux attach -t <session-name>`
+- **列出会话**：`tmux ls`
 
 ## API 参考
 
@@ -422,6 +455,7 @@ GET /poll/:requestId
 | `AUTH_SERVER_PORT` | 3847 | HTTP 服务器端口 |
 | `AUTH_TIMEOUT_MS` | 30000 | 授权超时毫秒数 |
 | `CLAUDE_CALL_SERVER_URL` | `http://localhost:3847` | PTY 包装器的服务器 URL |
+| `CLAUDE_CALL_BASE_DIR` | - | `/claude_call` 命令的基础目录（远程启动必需） |
 
 ### 文件结构
 
