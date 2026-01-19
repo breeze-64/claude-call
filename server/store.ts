@@ -122,6 +122,20 @@ export function resolveQuestionRequest(
 }
 
 /**
+ * Cancel a request (mark as timed out/cancelled)
+ * Returns the request if found and not already resolved
+ */
+export function cancelRequest(requestId: string): PendingRequest | null {
+  const request = pendingRequests.get(requestId);
+  if (!request || request.resolved) {
+    return null;
+  }
+  request.resolved = true;
+  request.cancelled = true;
+  return request;
+}
+
+/**
  * Update message ID for a request
  */
 export function setRequestMessageId(requestId: string, messageId: number): void {

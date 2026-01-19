@@ -35,6 +35,9 @@ export interface PendingRequest {
   question?: string;
   options?: QuestionOption[];
   selectedOption?: string;  // The option ID user selected
+
+  // For cancelled/timed out requests
+  cancelled?: boolean;
 }
 
 /**
