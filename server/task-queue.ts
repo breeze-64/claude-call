@@ -244,26 +244,41 @@ export function getPendingTasks(sessionId: string): PendingTask[] {
 }
 
 /**
- * Acknowledge that a task has been processed
+ * Task completion status
  */
-export function acknowledgeTask(taskId: string): boolean {
+export interface TaskCompletion {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Acknowledge that a task has been processed
+ * Returns the task info for notification purposes
+ */
+export function acknowledgeTask(
+  taskId: string,
+  completion?: TaskCompletion
+): { task: PendingTask; session: Session | undefined } | null {
   const task = tasks.get(taskId);
-  if (task) {
-    task.acknowledged = true;
-    console.log(`[TaskQueue] Task acknowledged: ${taskId.slice(0, 8)}...`);
-
-    // Update session activity
-    touchSession(task.sessionId);
-
-    // Schedule cleanup after delay
-    setTimeout(() => {
-      tasks.delete(taskId);
-      console.log(`[TaskQueue] Task cleaned up: ${taskId.slice(0, 8)}...`);
-    }, CLEANUP_DELAY);
-
-    return true;
+  if (!task) {
+    return null;
   }
-  return false;
+
+  task.acknowledged = true;
+  const status = completion?.success === false ? "failed" : "completed";
+  console.log(`[TaskQueue] Task ${status}: ${taskId.slice(0, 8)}...`);
+
+  // Update session activity
+  touchSession(task.sessionId);
+  const session = sessions.get(task.sessionId);
+
+  // Schedule cleanup after delay
+  setTimeout(() => {
+    tasks.delete(taskId);
+    console.log(`[TaskQueue] Task cleaned up: ${taskId.slice(0, 8)}...`);
+  }, CLEANUP_DELAY);
+
+  return { task, session };
 }
 
 /**
