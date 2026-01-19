@@ -205,6 +205,70 @@ function createQuestionKeyboard(
 }
 
 /**
+ * Create inline keyboard for PTY keystroke authorization
+ * Maps to Claude Code's terminal prompt options:
+ * 1. Yes
+ * 2. Yes, allow all edits in X during this session
+ * 3. No
+ */
+function createPtyAuthKeyboard(notificationId: string): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [
+      [
+        { text: "1️⃣ Yes", callback_data: `pty:${notificationId}:1` },
+        { text: "2️⃣ Allow All", callback_data: `pty:${notificationId}:2` },
+        { text: "3️⃣ No", callback_data: `pty:${notificationId}:3` },
+      ],
+    ],
+  };
+}
+
+/**
+ * Send authorization notification to Telegram for PTY keystroke injection
+ * This does NOT block - just sends a notification with buttons
+ * When user clicks, a keystroke (1/2/3) is injected into the terminal
+ */
+export async function sendAuthNotification(
+  sessionId: string,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  cwd?: string
+): Promise<void> {
+  try {
+    const sessionShort = sessionId.slice(0, 8);
+    const details = formatToolInput(toolName, toolInput);
+    const description = toolInput?.description as string | undefined;
+    const descriptionLine = description ? `\n📝 ${description}` : "";
+
+    // Generate a unique notification ID
+    const notificationId = crypto.randomUUID().slice(0, 8);
+
+    const message = `🔐 *终端授权请求*
+
+📋 工具: \`${toolName}\`${descriptionLine}
+🔑 Session: \`${sessionShort}...\`
+${cwd ? `📂 目录: \`${cwd}\`` : ""}
+
+${details}
+
+_点击按钮将注入按键到终端_`;
+
+    const keyboard = createPtyAuthKeyboard(notificationId);
+
+    await callApi<{ message_id: number }>("sendMessage", {
+      chat_id: CHAT_ID,
+      text: message,
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+
+    console.log(`[Telegram] Sent auth notification: ${notificationId} for ${toolName}`);
+  } catch (error) {
+    console.error("Failed to send auth notification:", error);
+  }
+}
+
+/**
  * Send authorization request to Telegram
  */
 export async function sendAuthRequest(request: PendingRequest): Promise<void> {
@@ -315,6 +379,54 @@ export async function processCallback(
 
   const data = callbackQuery.data;
 
+  // Handle PTY keystroke injection (format: pty:notificationId:keystroke)
+  // This is for auth notifications - inject keystroke to terminal
+  if (data.startsWith("pty:")) {
+    const parts = data.split(":");
+    const notificationId = parts[1];
+    const keystroke = parts[2];
+
+    // Find the most recently active PTY session
+    const allSessions = getAllSessions();
+    if (allSessions.length === 0) {
+      await answerCallbackQuery(callbackQuery.id, "没有活跃的终端会话");
+      await callApi("sendMessage", {
+        chat_id: CHAT_ID,
+        text: "⚠️ *无活跃会话*\n\n没有可接收按键的终端会话",
+        parse_mode: "Markdown",
+      });
+      return;
+    }
+
+    const targetSession = allSessions[0];
+
+    // Create keystroke task
+    addKeystrokeTask(targetSession.id, keystroke);
+    console.log(`[Telegram] PTY auth keystroke "${keystroke}" queued for ${targetSession.name}`);
+
+    // Update the message to show the selection
+    const keystrokeLabels: Record<string, string> = {
+      "1": "✅ Yes",
+      "2": "🔓 Allow All",
+      "3": "❌ No",
+    };
+    const label = keystrokeLabels[keystroke] || keystroke;
+
+    try {
+      await callApi("editMessageText", {
+        chat_id: CHAT_ID,
+        message_id: callbackQuery.message.message_id,
+        text: `${label}\n\n_按键已发送到 ${targetSession.name}_`,
+        parse_mode: "Markdown",
+      });
+    } catch {
+      // Message might already be edited
+    }
+
+    await answerCallbackQuery(callbackQuery.id, `已发送: ${label}`);
+    return;
+  }
+
   // Handle session selection for task (format: sess:sessionId:originalMsgId)
   if (data.startsWith("sess:")) {
     const parts = data.split(":");
@@ -401,6 +513,12 @@ export async function processCallback(
       console.log(`[Telegram] Created keystroke task: "${keystroke}" for session ${targetSession.shortId}`);
     } else {
       console.warn(`[Telegram] No active PTY session, keystroke not sent`);
+      // Notify user that there's no active session
+      await callApi("sendMessage", {
+        chat_id: CHAT_ID,
+        text: "⚠️ *无活跃会话*\n\n选项已记录，但没有可接收按键的会话。\n请确保 Claude Code 正在运行。",
+        parse_mode: "Markdown",
+      });
     }
 
     resolveQuestionRequest(requestId, optionId);
@@ -541,6 +659,13 @@ export async function processReplyMessage(
     console.log(`[Telegram] Created custom keystroke task for session ${targetSession.shortId}`);
   } else {
     console.warn(`[Telegram] No active PTY session, custom text keystroke not sent`);
+    // Notify user that there's no active session
+    await callApi("sendMessage", {
+      chat_id: CHAT_ID,
+      text: "⚠️ *无活跃会话*\n\n自定义输入已记录，但没有可接收的会话。\n请确保 Claude Code 正在运行。",
+      parse_mode: "Markdown",
+      reply_to_message_id: message.message_id,
+    });
   }
 
   // Use special prefix to indicate custom input
