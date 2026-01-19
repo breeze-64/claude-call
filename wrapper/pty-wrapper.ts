@@ -90,12 +90,17 @@ async function fetchPendingTasks(sessionId: string): Promise<PendingTask[]> {
 }
 
 /**
- * Acknowledge task as processed
+ * Acknowledge task as processed with optional status
  */
-async function acknowledgeTask(taskId: string): Promise<void> {
+async function acknowledgeTask(
+  taskId: string,
+  status?: { success: boolean; error?: string }
+): Promise<void> {
   try {
     await fetch(`${SERVER_URL}/tasks/${taskId}/ack`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: status ? JSON.stringify(status) : undefined,
       signal: AbortSignal.timeout(5000),
     });
   } catch {
@@ -104,10 +109,19 @@ async function acknowledgeTask(taskId: string): Promise<void> {
 }
 
 /**
+ * Injection result
+ */
+interface InjectionResult {
+  success: boolean;
+  error?: string;
+}
+
+/**
  * Inject a task using tmux send-keys
  * Handles both regular message tasks and keystroke tasks differently
+ * Returns success/failure status for notification
  */
-async function injectTask(tmuxSession: string, task: PendingTask): Promise<void> {
+async function injectTask(tmuxSession: string, task: PendingTask): Promise<InjectionResult> {
   const isKeystroke = task.type === "keystroke";
 
   if (isKeystroke) {
@@ -136,7 +150,7 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<void>
         if (exitCode !== 0) {
           const stderr = await new Response(sendKey.stderr).text();
           console.error(`[PTY] tmux send-keys failed (${exitCode}): ${stderr}`);
-          return;
+          return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${exitCode}`}` };
         }
       } else {
         // Custom text - send with -l flag for literal interpretation, then Enter
@@ -148,7 +162,7 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<void>
         if (textExitCode !== 0) {
           const stderr = await new Response(sendText.stderr).text();
           console.error(`[PTY] tmux send-keys (text) failed (${textExitCode}): ${stderr}`);
-          return;
+          return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${textExitCode}`}` };
         }
 
         const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
@@ -159,11 +173,12 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<void>
         if (enterExitCode !== 0) {
           const stderr = await new Response(sendEnter.stderr).text();
           console.error(`[PTY] tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
-          return;
+          return { success: false, error: `tmux Enter 失败: ${stderr.trim() || `exit code ${enterExitCode}`}` };
         }
       }
 
       console.log(`[PTY] Keystroke injected successfully\r\n`);
+      return { success: true };
     } else {
       // === REGULAR MESSAGE INJECTION ===
       // Use Bun.spawn instead of shell template to avoid variable escaping issues
@@ -171,20 +186,38 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<void>
         stdout: "ignore",
         stderr: "pipe",
       });
-      await sendText.exited;
+      const textExitCode = await sendText.exited;
+      if (textExitCode !== 0) {
+        const stderr = await new Response(sendText.stderr).text();
+        console.error(`[PTY] tmux send-keys failed (${textExitCode}): ${stderr}`);
+        return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${textExitCode}`}` };
+      }
 
       const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
         stdout: "ignore",
         stderr: "pipe",
       });
-      await sendEnter.exited;
+      const enterExitCode = await sendEnter.exited;
+      if (enterExitCode !== 0) {
+        const stderr = await new Response(sendEnter.stderr).text();
+        console.error(`[PTY] tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
+        return { success: false, error: `tmux Enter 失败: ${stderr.trim() || `exit code ${enterExitCode}`}` };
+      }
 
       console.log(`[PTY] Task injected successfully\r\n`);
+      return { success: true };
     }
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[PTY] Injection failed:`, error);
+    return { success: false, error: `注入异常: ${errorMsg}` };
   }
 }
+
+// Track server connection state
+let serverConnected = true;
+let lastHealthCheck = Date.now();
+const HEALTH_CHECK_INTERVAL = 30000; // Check tmux health every 30 seconds
 
 /**
  * Start the task polling loop
@@ -194,21 +227,88 @@ async function startTaskPolling(sessionId: string, tmuxSession: string): Promise
   await Bun.sleep(2000);
 
   while (!isShuttingDown) {
+    // Periodic health check for tmux session
+    if (Date.now() - lastHealthCheck > HEALTH_CHECK_INTERVAL) {
+      lastHealthCheck = Date.now();
+      const alive = await isTmuxSessionAlive(tmuxSession);
+      if (!alive) {
+        console.error(`[PTY] tmux session ${tmuxSession} is dead!`);
+        await sendServerNotification(
+          `💀 *会话已结束*\n\n📋 会话: ${currentSession?.name || tmuxSession}\n\ntmux 会话已不存在`
+        );
+        // Trigger cleanup and exit
+        isShuttingDown = true;
+        break;
+      }
+    }
+
     try {
       const tasks = await fetchPendingTasks(sessionId);
 
+      // Track connection recovery
+      if (!serverConnected) {
+        serverConnected = true;
+        console.log("[PTY] Server connection restored");
+        await sendServerNotification(
+          `🔄 *连接已恢复*\n\n📋 会话: ${currentSession?.name || tmuxSession}\n\nPTY wrapper 已重新连接到服务器`
+        );
+      }
+
       for (const task of tasks) {
-        await injectTask(tmuxSession, task);
-        await acknowledgeTask(task.id);
+        const result = await injectTask(tmuxSession, task);
+        // Pass injection result to server for notification
+        await acknowledgeTask(task.id, result);
         await Bun.sleep(500);
       }
     } catch (error) {
       if (!isShuttingDown) {
+        // Track connection loss
+        if (serverConnected) {
+          serverConnected = false;
+          console.error("[PTY] Lost connection to server");
+        }
         console.error("[PTY] Task polling error:", error);
       }
     }
 
     await Bun.sleep(POLL_INTERVAL);
+  }
+
+  // Clean up on exit
+  if (currentSession) {
+    await unregisterSession(currentSession.id);
+  }
+}
+
+/**
+ * Check if tmux session is still alive
+ */
+async function isTmuxSessionAlive(tmuxSession: string): Promise<boolean> {
+  try {
+    const result = Bun.spawn(["tmux", "has-session", "-t", tmuxSession], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const exitCode = await result.exited;
+    return exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Send notification to server (for health/status updates)
+ */
+async function sendServerNotification(message: string): Promise<void> {
+  try {
+    await fetch(`${SERVER_URL}/notify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    // Server unreachable, can't notify
   }
 }
 

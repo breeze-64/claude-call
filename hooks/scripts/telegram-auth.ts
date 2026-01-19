@@ -61,6 +61,17 @@ const POLL_INTERVAL = 500; // ms
 const MAX_WAIT = 600000; // ms (10 minutes max)
 
 /**
+ * Cancel a request on the server (updates Telegram message)
+ */
+async function cancelRequest(requestId: string): Promise<void> {
+  try {
+    await fetch(`${SERVER_URL}/cancel/${requestId}`, { method: "POST" });
+  } catch {
+    // Ignore errors - best effort cancellation
+  }
+}
+
+/**
  * Tools that don't require authorization (safe, read-only)
  */
 const SKIP_TOOLS = new Set([
@@ -71,6 +82,19 @@ const SKIP_TOOLS = new Set([
   "WebFetch",
   "WebSearch",
   "TodoWrite",
+]);
+
+/**
+ * Tools that need PTY keystroke injection for authorization
+ * These tools will show a local prompt in Claude Code terminal
+ * We send a notification to Telegram and return "ask" immediately
+ */
+const PTY_AUTH_TOOLS = new Set([
+  "Bash",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
 ]);
 
 /**
@@ -366,7 +390,9 @@ async function main() {
   }
 
   // Check if already allowed by Claude Code's allowedTools config
-  if (tool_name && tool_name !== "AskUserQuestion") {
+  // Skip this check for PTY_AUTH_TOOLS - we want those to always send Telegram notifications
+  // so users can authorize remote sessions via keystroke injection
+  if (tool_name && tool_name !== "AskUserQuestion" && !PTY_AUTH_TOOLS.has(tool_name)) {
     try {
       const alreadyAllowed = await isAlreadyAllowed(tool_name, tool_input, cwd);
       if (alreadyAllowed) {
@@ -438,6 +464,8 @@ async function main() {
           }
 
           if (pollResult.status === "timeout") {
+            // Cancel request to update Telegram message
+            await cancelRequest(requestId);
             return outputDecision("ask", "Telegram 超时，请在终端选择");
           }
 
@@ -446,7 +474,8 @@ async function main() {
           }
         }
 
-        // Local timeout
+        // Local timeout - cancel request to update Telegram message
+        await cancelRequest(requestId);
         return outputDecision("ask", "本地超时，请在终端选择");
       }
 
@@ -454,7 +483,38 @@ async function main() {
       return outputDecision("ask");
     }
 
-    // Regular authorization request
+    // Check if this tool needs PTY keystroke injection for authorization
+    // These tools show a local prompt in Claude Code, so we:
+    // 1. Send a notification to Telegram with keystroke buttons
+    // 2. Return "ask" immediately to let Claude Code show its prompt
+    // 3. User clicks button in Telegram → PTY injects keystroke
+    if (tool_name && PTY_AUTH_TOOLS.has(tool_name)) {
+      console.error(`[claude-call] Tool ${tool_name} needs PTY auth, sending notification`);
+
+      // Send auth notification and wait for it to complete before exiting
+      // (process.exit in outputDecision would cancel pending async operations)
+      try {
+        await fetch(`${SERVER_URL}/auth-notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: session_id,
+            toolName: tool_name,
+            toolInput: tool_input,
+            cwd,
+          }),
+        });
+        console.error(`[claude-call] Auth notification sent successfully`);
+      } catch (err) {
+        console.error(`[claude-call] Failed to send auth notification: ${err}`);
+      }
+
+      // Return "ask" to let Claude Code show its local prompt
+      // User will respond via Telegram → PTY keystroke injection
+      return outputDecision("ask", "Authorization via Telegram (PTY injection)");
+    }
+
+    // For other tools, use the traditional blocking authorization flow
     const authResponse = await fetch(`${SERVER_URL}/authorize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -493,6 +553,7 @@ async function main() {
       }
 
       if (pollResult.status === "timeout") {
+        // Server already updated Telegram message
         return outputDecision("deny", "Authorization timeout");
       }
 
@@ -501,7 +562,8 @@ async function main() {
       }
     }
 
-    // Local timeout - deny
+    // Local timeout - cancel request to update Telegram message
+    await cancelRequest(requestId);
     return outputDecision("deny", "Local timeout waiting for authorization");
 
   } catch (error) {

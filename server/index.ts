@@ -6,17 +6,20 @@ import {
   isSessionAllowAll,
   isRequestTimedOut,
   resolveAuthRequest,
+  cancelRequest,
   cleanupStale,
   getAllPendingRequests,
 } from "./store";
 import {
   sendAuthRequest,
   sendQuestionRequest,
+  sendAuthNotification,
   updateMessage,
   startPolling,
   sendTestMessage,
   setupBotCommands,
   cleanupPendingTaskMessages,
+  sendNotification,
 } from "./telegram";
 import {
   getPendingTasks,
@@ -27,17 +30,28 @@ import {
   unregisterSession,
   getAllSessions,
   getSession,
+  type TaskCompletion,
 } from "./task-queue";
 
 const PORT = Number(process.env.AUTH_SERVER_PORT) || 3847;
 
 // Debug log file
 const LOG_FILE = "debug.log";
+async function appendToLog(line: string): Promise<void> {
+  try {
+    const file = Bun.file(LOG_FILE);
+    const existing = await file.exists() ? await file.text() : "";
+    await Bun.write(LOG_FILE, existing + line);
+  } catch {
+    // Ignore log errors
+  }
+}
+
 function debugLog(message: string) {
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${message}\n`;
   console.log(line.trim());
-  Bun.write(LOG_FILE, line, { append: true }).catch(() => {});
+  appendToLog(line);
 }
 
 /**
@@ -75,7 +89,7 @@ async function handleAuthorize(req: Request): Promise<Response> {
 
   // Log full request body for debugging to file
   const logLine = `[${new Date().toISOString()}] toolName="${toolName}" body=${JSON.stringify(body).slice(0, 500)}\n`;
-  Bun.write("debug.log", logLine, { append: true }).catch(() => {});
+  appendToLog(logLine);
 
   console.log(`[Authorize] Received: toolName=${toolName}, sessionId=${sessionId?.slice(0, 8)}, type=${type || "auth"}`);
   if (toolInput) {
@@ -243,7 +257,32 @@ async function handleRequest(req: Request): Promise<Response> {
   let response: Response;
 
   try {
-    if (path === "/authorize" && method === "POST") {
+    if (path === "/auth-notify" && method === "POST") {
+      // Auth notification endpoint for PTY keystroke injection flow
+      // This sends a notification to Telegram and returns immediately
+      const body = await parseBody<{
+        sessionId: string;
+        toolName: string;
+        toolInput: Record<string, unknown>;
+        cwd?: string;
+      }>(req);
+
+      console.log(`[Auth-Notify] Received: sessionId=${body?.sessionId?.slice(0, 8)}, toolName=${body?.toolName}, cwd=${body?.cwd}`);
+
+      if (!body?.sessionId) {
+        console.log(`[Auth-Notify] Error: Missing sessionId`);
+        response = jsonResponse({ error: "Missing sessionId" }, 400);
+      } else {
+        // Send notification to Telegram (fire and forget)
+        sendAuthNotification(
+          body.sessionId,
+          body.toolName || "未知工具",
+          body.toolInput || {},
+          body.cwd
+        );
+        response = jsonResponse({ success: true, message: "Notification sent" });
+      }
+    } else if (path === "/authorize" && method === "POST") {
       response = await handleAuthorize(req);
     } else if (path.startsWith("/poll/") && method === "GET") {
       const requestId = path.split("/")[2];
@@ -275,13 +314,70 @@ async function handleRequest(req: Request): Promise<Response> {
         response = jsonResponse(getPendingTasks(session.id));
       }
     } else if (path.startsWith("/tasks/") && path.endsWith("/ack") && method === "POST") {
-      // Acknowledge task as processed
+      // Acknowledge task as processed with optional status
       const taskId = path.split("/")[2];
-      const success = acknowledgeTask(taskId);
-      response = jsonResponse({ success });
+      const body = await parseBody<{ success?: boolean; error?: string }>(req);
+
+      const completion: TaskCompletion | undefined = body
+        ? { success: body.success !== false, error: body.error }
+        : undefined;
+
+      const result = acknowledgeTask(taskId, completion);
+
+      if (result) {
+        const { task, session } = result;
+        const sessionName = session?.name || "未知会话";
+        const preview = task.message.length > 30 ? task.message.slice(0, 30) + "..." : task.message;
+
+        // Send notification based on status
+        if (completion?.success === false) {
+          // Task failed
+          const errorMsg = completion.error || "未知错误";
+          await sendNotification(
+            `❌ *任务注入失败*\n\n📋 会话: ${sessionName}\n📝 任务: \`${preview}\`\n⚠️ 错误: ${errorMsg}`,
+            { silent: false }
+          );
+        } else if (task.type !== "keystroke") {
+          // Task succeeded (only notify for regular tasks, not keystroke tasks)
+          await sendNotification(
+            `✅ *任务已注入终端*\n\n📋 会话: ${sessionName}\n📝 任务: \`${preview}\``,
+            { silent: true }
+          );
+        }
+        // Note: keystroke tasks (option selections) don't need completion notification
+        // because the question message already gets updated with the selection
+
+        response = jsonResponse({ success: true });
+      } else {
+        response = jsonResponse({ success: false });
+      }
     } else if (path === "/tasks/stats" && method === "GET") {
       // Get task queue stats (for debugging)
       response = jsonResponse(getTaskStats());
+    } else if (path.match(/^\/cancel\/[^/]+$/) && method === "POST") {
+      // Cancel a request (used by hook when timing out)
+      const requestId = path.split("/")[2];
+      const request = cancelRequest(requestId);
+      if (request) {
+        // Update Telegram message to show timeout
+        const statusText = request.type === "question"
+          ? "⏱️ *超时 - 请在终端选择*"
+          : "⏱️ *超时 - 已拒绝*";
+        updateMessage(request, statusText);
+        response = jsonResponse({ success: true, cancelled: true });
+      } else {
+        // Request not found or already resolved
+        response = jsonResponse({ success: false, cancelled: false });
+      }
+    } else if (path === "/notify" && method === "POST") {
+      // Generic notification endpoint (used by PTY wrapper for health/status updates)
+      const body = await parseBody<{ message: string; silent?: boolean }>(req);
+      if (body?.message) {
+        await sendNotification(body.message, { silent: body.silent });
+        response = jsonResponse({ success: true });
+      } else {
+        response = jsonResponse({ error: "Missing message" }, 400);
+      }
     } else {
       response = jsonResponse({ error: "Not found" }, 404);
     }
