@@ -22,6 +22,27 @@
 
 [English](./README.md) | 中文
 
+## 一键安装 | Quick Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/breeze-64/claude-call/main/install.sh | bash
+```
+
+安装脚本会：
+- 自动安装 Bun 和 tmux（如果需要）
+- 引导你完成 Telegram Bot 配置
+- 自动配置 Claude Code hooks
+- 创建 `claude-call` 和 `claude-call-server` 命令
+
+安装后使用：
+```bash
+# 终端 1：启动服务器
+claude-call-server
+
+# 终端 2：运行带 Telegram 集成的 Claude Code
+claude-call
+```
+
 ## 截图 | Screenshots
 
 <p align="center">

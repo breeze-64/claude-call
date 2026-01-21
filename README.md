@@ -26,6 +26,27 @@ Full Telegram integration for [Claude Code](https://claude.ai/code) (Anthropic's
 
 English | [中文](./README.zh-CN.md)
 
+## Quick Install | 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/breeze-64/claude-call/main/install.sh | bash
+```
+
+The installer will:
+- Install Bun and tmux if needed
+- Guide you through Telegram Bot setup
+- Configure Claude Code hooks automatically
+- Create `claude-call` and `claude-call-server` commands
+
+After installation:
+```bash
+# Terminal 1: Start the server
+claude-call-server
+
+# Terminal 2: Run Claude Code with Telegram integration
+claude-call
+```
+
 ## Screenshots | 截图
 
 <p align="center">
