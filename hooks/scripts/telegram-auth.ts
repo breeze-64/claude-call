@@ -7,6 +7,10 @@
  * It supports both authorization requests and multi-option questions.
  */
 
+import { createFileLogger } from "../../server/logger";
+
+const log = createFileLogger("Hook", "hook.log");
+
 interface QuestionOption {
   label: string;
   description?: string;
@@ -83,6 +87,68 @@ const SKIP_TOOLS = new Set([
   "WebSearch",
   "TodoWrite",
 ]);
+
+/**
+ * Safe Bash command patterns that don't need authorization
+ * These are read-only or informational commands
+ */
+const SAFE_BASH_PATTERNS = [
+  // File listing and info
+  /^ls\b/,
+  /^ll\b/,
+  /^la\b/,
+  /^pwd$/,
+  /^cat\b/,
+  /^head\b/,
+  /^tail\b/,
+  /^less\b/,
+  /^more\b/,
+  /^file\b/,
+  /^stat\b/,
+  /^wc\b/,
+  /^du\b/,
+  /^df\b/,
+  // Search and find
+  /^find\b/,
+  /^grep\b/,
+  /^rg\b/,
+  /^fd\b/,
+  /^which\b/,
+  /^whereis\b/,
+  /^type\b/,
+  // Git read-only
+  /^git\s+(status|log|diff|show|branch|tag|remote|config\s+--get)/,
+  /^git\s+ls-/,
+  // Package manager info
+  /^(npm|yarn|pnpm|bun)\s+(list|ls|outdated|audit|info|view|show|why)/,
+  /^pip\s+(list|show|freeze)/,
+  /^cargo\s+(tree|metadata)/,
+  // System info
+  /^echo\b/,
+  /^date$/,
+  /^whoami$/,
+  /^hostname$/,
+  /^uname\b/,
+  /^env$/,
+  /^printenv\b/,
+  /^ps\b/,
+  /^top\b.*-n\s*1/,  // Only non-interactive top
+  /^lsof\b/,
+  /^netstat\b/,
+  // Help and version
+  /--help$/,
+  /--version$/,
+  /-h$/,
+  /-V$/,
+];
+
+/**
+ * Check if a Bash command is safe (read-only/informational)
+ */
+function isSafeBashCommand(command: string): boolean {
+  const trimmed = command.trim();
+  return SAFE_BASH_PATTERNS.some(pattern => pattern.test(trimmed));
+}
 
 /**
  * Tools that need PTY keystroke injection for authorization
@@ -307,11 +373,21 @@ function outputDecision(
 }
 
 /**
- * Parse AskUserQuestion input and extract options
+ * Parsed question with options
  */
-function parseAskUserQuestion(toolInput: Record<string, unknown>): {
+interface ParsedQuestion {
+  header: string;
   question: string;
   options: ServerOption[];
+}
+
+/**
+ * Parse AskUserQuestion input and extract ALL questions
+ * Supports multi-question forms (编程语言 + Web框架 + 数据库 etc.)
+ */
+function parseAskUserQuestion(toolInput: Record<string, unknown>): {
+  questions: ParsedQuestion[];
+  isMultiQuestion: boolean;
 } | null {
   const questions = toolInput.questions as Question[] | undefined;
 
@@ -319,26 +395,37 @@ function parseAskUserQuestion(toolInput: Record<string, unknown>): {
     return null;
   }
 
-  // Take the first question
-  const q = questions[0];
-  if (!q.options || q.options.length === 0) {
+  const parsedQuestions: ParsedQuestion[] = [];
+
+  for (const q of questions) {
+    if (!q.options || q.options.length === 0) {
+      continue;
+    }
+
+    // Convert options to server format with IDs (1, 2, 3... for keystroke)
+    const options: ServerOption[] = q.options.map((opt, index) => {
+      const id = String(index + 1); // 1, 2, 3... for keystroke injection
+      return {
+        id,
+        label: opt.label,
+        description: opt.description,
+      };
+    });
+
+    parsedQuestions.push({
+      header: q.header || "",
+      question: q.question || q.header || "请选择",
+      options,
+    });
+  }
+
+  if (parsedQuestions.length === 0) {
     return null;
   }
 
-  // Convert options to server format with IDs
-  const options: ServerOption[] = q.options.map((opt, index) => {
-    // Use A, B, C... for IDs
-    const id = String.fromCharCode(65 + index); // A, B, C, D...
-    return {
-      id,
-      label: opt.label,
-      description: opt.description,
-    };
-  });
-
   return {
-    question: q.question || q.header || "请选择一个选项",
-    options,
+    questions: parsedQuestions,
+    isMultiQuestion: parsedQuestions.length > 1,
   };
 }
 
@@ -354,14 +441,14 @@ async function main() {
     input = JSON.parse(inputText);
   } catch {
     // Invalid input - allow by default
-    console.error(`[claude-call] Failed to parse input JSON: ${inputText.slice(0, 200)}`);
+    log.error(`Failed to parse input JSON: ${inputText.slice(0, 200)}`);
     return outputDecision("allow", "Invalid hook input");
   }
 
   // Debug: Log the full input to understand what Claude Code sends
-  console.error(`[claude-call] Hook input: tool_name=${input.tool_name}, event=${input.hook_event_name}, has_tool_input=${!!input.tool_input}`);
+  log.debug(`Hook input: tool_name=${input.tool_name}, event=${input.hook_event_name}, has_tool_input=${!!input.tool_input}`);
   if (!input.tool_name) {
-    console.error(`[claude-call] WARNING: tool_name is missing! Full input: ${JSON.stringify(input).slice(0, 500)}`);
+    log.warn(`tool_name is missing! Full input: ${JSON.stringify(input).slice(0, 500)}`);
   }
 
   const { session_id, tool_input, cwd } = input;
@@ -371,16 +458,16 @@ async function main() {
   if (!tool_name && tool_input) {
     if ("command" in tool_input) {
       tool_name = "Bash";
-      console.error(`[claude-call] Inferred tool_name as "Bash" from command field`);
+      log.debug('Inferred tool_name as "Bash" from command field');
     } else if ("file_path" in tool_input && ("new_string" in tool_input || "old_string" in tool_input)) {
       tool_name = "Edit";
-      console.error(`[claude-call] Inferred tool_name as "Edit"`);
+      log.debug('Inferred tool_name as "Edit"');
     } else if ("file_path" in tool_input && "content" in tool_input) {
       tool_name = "Write";
-      console.error(`[claude-call] Inferred tool_name as "Write"`);
+      log.debug('Inferred tool_name as "Write"');
     } else if ("questions" in tool_input) {
       tool_name = "AskUserQuestion";
-      console.error(`[claude-call] Inferred tool_name as "AskUserQuestion"`);
+      log.debug('Inferred tool_name as "AskUserQuestion"');
     }
   }
 
@@ -390,109 +477,83 @@ async function main() {
   }
 
   // Check if already allowed by Claude Code's allowedTools config
-  // Skip this check for PTY_AUTH_TOOLS - we want those to always send Telegram notifications
-  // so users can authorize remote sessions via keystroke injection
-  if (tool_name && tool_name !== "AskUserQuestion" && !PTY_AUTH_TOOLS.has(tool_name)) {
+  // This applies to ALL tools including PTY tools - if already allowed, no notification needed
+  if (tool_name && tool_name !== "AskUserQuestion") {
     try {
       const alreadyAllowed = await isAlreadyAllowed(tool_name, tool_input, cwd);
       if (alreadyAllowed) {
-        console.error(`[claude-call] Tool ${tool_name} already allowed by Claude Code config, skipping Telegram`);
+        log.debug(`Tool ${tool_name} already allowed by Claude Code config, skipping notification`);
         return outputDecision("allow", "Auto-approved (allowedTools config)");
       }
     } catch (error) {
-      console.error(`[claude-call] Error checking allowedTools: ${error}`);
+      log.error(`Error checking allowedTools: ${error}`);
       // Continue to normal flow if check fails
     }
   }
 
   try {
-    // Check if this is an AskUserQuestion
+    // For AskUserQuestion:
+    // Parse questions and send to Telegram for remote selection
     if (tool_name === "AskUserQuestion") {
       const parsed = parseAskUserQuestion(tool_input);
 
       if (parsed) {
-        // Send as question request
-        const authResponse = await fetch(`${SERVER_URL}/authorize`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId: session_id,
-            toolName: tool_name,
-            toolInput: tool_input,
-            cwd,
-            type: "question",
-            question: parsed.question,
-            options: parsed.options,
-          }),
-        });
+        const { questions, isMultiQuestion } = parsed;
+        log.info(`AskUserQuestion detected: ${questions.length} question(s), multi=${isMultiQuestion}`);
 
-        if (!authResponse.ok) {
-          throw new Error(`Server responded with ${authResponse.status}`);
+        // Reject multi-question requests - ask Claude to split them
+        // This simplifies the remote interaction flow significantly
+        if (isMultiQuestion) {
+          log.info("Rejecting multi-question request, asking Claude to split");
+          return outputDecision(
+            "deny",
+            "Multiple questions in a single AskUserQuestion are not supported for remote users. Please ask ONE question at a time, waiting for user response before asking the next question."
+          );
         }
 
-        const authResult: AuthorizeResponse = await authResponse.json();
-
-        // Poll for decision
-        const startTime = Date.now();
-        const requestId = authResult.requestId;
-
-        while (Date.now() - startTime < MAX_WAIT) {
-          await Bun.sleep(POLL_INTERVAL);
-
-          const pollResponse = await fetch(`${SERVER_URL}/poll/${requestId}`);
-          const pollResult: PollResponse = await pollResponse.json();
-
-          if (pollResult.status === "resolved" && pollResult.selectedOption) {
-            const selectedOption = pollResult.selectedOption;
-
-            // Check if it's a custom input (prefixed with __CUSTOM__:)
-            if (selectedOption.startsWith("__CUSTOM__:")) {
-              const customText = selectedOption.slice("__CUSTOM__:".length);
-              // Return custom text directly as the answer
-              outputDecision("allow", `自定义输入: ${customText}`, customText);
-              return; // Safety return (outputDecision calls process.exit)
-            }
-
-            // Find the index of the selected option (A=0, B=1, etc.)
-            const optionIndex = selectedOption.charCodeAt(0) - 65;
-            const questions = tool_input.questions as Question[];
-            const selectedLabel = questions[0]?.options[optionIndex]?.label || selectedOption;
-
-            // Return the selected answer
-            outputDecision("allow", `用户选择: ${selectedLabel}`, selectedLabel);
-            return; // Safety return
-          }
-
-          if (pollResult.status === "timeout") {
-            // Cancel request to update Telegram message
-            await cancelRequest(requestId);
-            return outputDecision("ask", "Telegram 超时，请在终端选择");
-          }
-
-          if (pollResult.status === "not_found") {
-            return outputDecision("ask", "请求未找到");
-          }
+        // Single question - send to Telegram
+        const q = questions[0];
+        try {
+          await fetch(`${SERVER_URL}/question-notify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId: session_id,
+              question: q.question,
+              options: q.options,
+              cwd,
+            }),
+          });
+          log.info("Question notification sent successfully");
+        } catch (err) {
+          log.error(`Failed to send question notification: ${err}`);
         }
 
-        // Local timeout - cancel request to update Telegram message
-        await cancelRequest(requestId);
-        return outputDecision("ask", "本地超时，请在终端选择");
+        // Return "ask" to let Claude Code show its local prompt
+        // User will respond via Telegram → PTY keystroke injection
+        return outputDecision("ask", "Question notification sent to Telegram");
       }
 
       // If can't parse, fall through to terminal
       return outputDecision("ask");
     }
 
-    // Check if this tool needs PTY keystroke injection for authorization
-    // These tools show a local prompt in Claude Code, so we:
-    // 1. Send a notification to Telegram with keystroke buttons
-    // 2. Return "ask" immediately to let Claude Code show its prompt
-    // 3. User clicks button in Telegram → PTY injects keystroke
+    // For PTY tools (Bash, Write, Edit, etc.):
+    // If we reach here, the operation is NOT already allowed (checked above)
+    // Send notification to Telegram and return "ask" for PTY keystroke injection
     if (tool_name && PTY_AUTH_TOOLS.has(tool_name)) {
-      console.error(`[claude-call] Tool ${tool_name} needs PTY auth, sending notification`);
+      // For Bash commands, check if it's a safe read-only command
+      if (tool_name === "Bash") {
+        const command = tool_input.command as string | undefined;
+        if (command && isSafeBashCommand(command)) {
+          log.debug(`Safe Bash command detected: ${command.slice(0, 50)}, auto-allowing`);
+          return outputDecision("allow", "Safe command auto-approved");
+        }
+      }
 
-      // Send auth notification and wait for it to complete before exiting
-      // (process.exit in outputDecision would cancel pending async operations)
+      log.info(`Tool ${tool_name} needs authorization, sending notification`);
+
+      // Send auth notification
       try {
         await fetch(`${SERVER_URL}/auth-notify`, {
           method: "POST",
@@ -504,13 +565,12 @@ async function main() {
             cwd,
           }),
         });
-        console.error(`[claude-call] Auth notification sent successfully`);
+        log.info("Auth notification sent successfully");
       } catch (err) {
-        console.error(`[claude-call] Failed to send auth notification: ${err}`);
+        log.error(`Failed to send auth notification: ${err}`);
       }
 
       // Return "ask" to let Claude Code show its local prompt
-      // User will respond via Telegram → PTY keystroke injection
       return outputDecision("ask", "Authorization via Telegram (PTY injection)");
     }
 
@@ -568,7 +628,7 @@ async function main() {
 
   } catch (error) {
     // Server unreachable - fall through to terminal prompt
-    console.error(`[claude-call] Server error: ${error}`);
+    log.error(`Server error: ${error}`);
 
     // Return "ask" to let Claude Code handle it normally
     outputDecision("ask", "Authorization server unreachable - asking user directly");
@@ -576,7 +636,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`[claude-call] Fatal error: ${error}`);
+  log.fatal(`Fatal error: ${error}`);
   // On fatal error, allow the operation to prevent blocking
   outputDecision("ask", "Hook error - asking user directly");
 });

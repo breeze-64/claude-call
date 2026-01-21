@@ -14,6 +14,9 @@ import {
   sendAuthRequest,
   sendQuestionRequest,
   sendAuthNotification,
+  sendQuestionNotification,
+  sendDynamicPromptNotification,
+  sendMultiQuestionNotification,
   updateMessage,
   startPolling,
   sendTestMessage,
@@ -32,27 +35,11 @@ import {
   getSession,
   type TaskCompletion,
 } from "./task-queue";
+import { createLogger } from "./logger";
 
 const PORT = Number(process.env.AUTH_SERVER_PORT) || 3847;
 
-// Debug log file
-const LOG_FILE = "debug.log";
-async function appendToLog(line: string): Promise<void> {
-  try {
-    const file = Bun.file(LOG_FILE);
-    const existing = await file.exists() ? await file.text() : "";
-    await Bun.write(LOG_FILE, existing + line);
-  } catch {
-    // Ignore log errors
-  }
-}
-
-function debugLog(message: string) {
-  const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${message}\n`;
-  console.log(line.trim());
-  appendToLog(line);
-}
+const log = createLogger("Server");
 
 /**
  * Parse JSON body from request
@@ -87,38 +74,37 @@ async function handleAuthorize(req: Request): Promise<Response> {
   const { sessionId, toolInput, cwd, type, question, options } = body;
   let { toolName } = body;
 
-  // Log full request body for debugging to file
-  const logLine = `[${new Date().toISOString()}] toolName="${toolName}" body=${JSON.stringify(body).slice(0, 500)}\n`;
-  appendToLog(logLine);
+  // Log full request body for debugging
+  log.debug(`Authorize request: toolName="${toolName}" body=${JSON.stringify(body).slice(0, 500)}`);
 
-  console.log(`[Authorize] Received: toolName=${toolName}, sessionId=${sessionId?.slice(0, 8)}, type=${type || "auth"}`);
+  log.info(`Received: toolName=${toolName}, sessionId=${sessionId?.slice(0, 8)}, type=${type || "auth"}`);
   if (toolInput) {
-    console.log(`[Authorize] toolInput keys: ${Object.keys(toolInput).join(", ")}`);
+    log.debug(`toolInput keys: ${Object.keys(toolInput).join(", ")}`);
   }
 
   if (!sessionId) {
-    console.log(`[Authorize] Missing sessionId`);
+    log.warn("Missing sessionId");
     return jsonResponse({ error: "Missing sessionId" }, 400);
   }
 
   // Infer toolName from toolInput if missing
   if (!toolName) {
-    console.log(`[Authorize] toolName is missing, attempting to infer from toolInput`);
+    log.debug("toolName is missing, attempting to infer from toolInput");
     if (toolInput) {
       if ("command" in toolInput) {
         toolName = "Bash";
-        console.log(`[Authorize] Inferred toolName as "Bash" from command field`);
+        log.debug('Inferred toolName as "Bash" from command field');
       } else if ("file_path" in toolInput && ("new_string" in toolInput || "old_string" in toolInput)) {
         toolName = "Edit";
-        console.log(`[Authorize] Inferred toolName as "Edit" from file_path + new_string/old_string`);
+        log.debug('Inferred toolName as "Edit" from file_path + new_string/old_string');
       } else if ("file_path" in toolInput && "content" in toolInput) {
         toolName = "Write";
-        console.log(`[Authorize] Inferred toolName as "Write" from file_path + content`);
+        log.debug('Inferred toolName as "Write" from file_path + content');
       } else if ("questions" in toolInput) {
         toolName = "AskUserQuestion";
-        console.log(`[Authorize] Inferred toolName as "AskUserQuestion" from questions field`);
+        log.debug('Inferred toolName as "AskUserQuestion" from questions field');
       } else {
-        console.log(`[Authorize] Could not infer toolName, using "未知工具"`);
+        log.debug('Could not infer toolName, using "未知工具"');
       }
     }
   }
@@ -267,10 +253,10 @@ async function handleRequest(req: Request): Promise<Response> {
         cwd?: string;
       }>(req);
 
-      console.log(`[Auth-Notify] Received: sessionId=${body?.sessionId?.slice(0, 8)}, toolName=${body?.toolName}, cwd=${body?.cwd}`);
+      log.info(`Auth-Notify received: sessionId=${body?.sessionId?.slice(0, 8)}, toolName=${body?.toolName}, cwd=${body?.cwd}`);
 
       if (!body?.sessionId) {
-        console.log(`[Auth-Notify] Error: Missing sessionId`);
+        log.warn("Auth-Notify: Missing sessionId");
         response = jsonResponse({ error: "Missing sessionId" }, 400);
       } else {
         // Send notification to Telegram (fire and forget)
@@ -281,6 +267,32 @@ async function handleRequest(req: Request): Promise<Response> {
           body.cwd
         );
         response = jsonResponse({ success: true, message: "Notification sent" });
+      }
+    } else if (path === "/question-notify" && method === "POST") {
+      // Question notification endpoint for PTY keystroke injection flow
+      // Sends question with option buttons, returns immediately
+      // User selection triggers keystroke injection via PTY
+      const body = await parseBody<{
+        sessionId: string;
+        question: string;
+        options: Array<{ id: string; label: string; description?: string }>;
+        cwd?: string;
+      }>(req);
+
+      log.info(`Question-Notify received: sessionId=${body?.sessionId?.slice(0, 8)}, question=${body?.question?.slice(0, 30)}`);
+
+      if (!body?.sessionId || !body?.question || !body?.options) {
+        log.warn("Question-Notify: Missing required fields");
+        response = jsonResponse({ error: "Missing sessionId, question, or options" }, 400);
+      } else {
+        // Send notification to Telegram (fire and forget)
+        sendQuestionNotification(
+          body.sessionId,
+          body.question,
+          body.options,
+          body.cwd
+        );
+        response = jsonResponse({ success: true, message: "Question notification sent" });
       }
     } else if (path === "/authorize" && method === "POST") {
       response = await handleAuthorize(req);
@@ -378,11 +390,68 @@ async function handleRequest(req: Request): Promise<Response> {
       } else {
         response = jsonResponse({ error: "Missing message" }, 400);
       }
+    } else if (path === "/multi-question-notify" && method === "POST") {
+      // Multi-question notification endpoint for AskUserQuestion with multiple questions
+      // Sends all questions to Telegram, handles Tab navigation between questions
+      const body = await parseBody<{
+        sessionId: string;
+        questions: Array<{
+          header: string;
+          question: string;
+          options: Array<{ id: string; label: string; description?: string }>;
+        }>;
+        isMultiQuestion: boolean;
+        cwd?: string;
+      }>(req);
+
+      log.info(`Multi-Question-Notify received: sessionId=${body?.sessionId?.slice(0, 8)}, questions=${body?.questions?.length}, multi=${body?.isMultiQuestion}`);
+
+      if (!body?.sessionId || !body?.questions || body.questions.length === 0) {
+        log.warn("Multi-Question-Notify: Missing required fields");
+        response = jsonResponse({ error: "Missing sessionId or questions" }, 400);
+      } else {
+        // Send multi-question notification to Telegram
+        await sendMultiQuestionNotification(
+          body.sessionId,
+          body.questions,
+          body.isMultiQuestion,
+          body.cwd
+        );
+        response = jsonResponse({ success: true, message: "Multi-question notification sent" });
+      }
+    } else if (path === "/prompt-detected" && method === "POST") {
+      // Dynamic prompt detection endpoint (used by PTY wrapper terminal monitoring)
+      // Sends notification with actual options detected from terminal
+      const body = await parseBody<{
+        sessionId: string;
+        type: "permission" | "question" | "unknown";
+        title: string;
+        options: Array<{ number: string; label: string }>;
+        rawContent: string;
+        cwd?: string;
+      }>(req);
+
+      log.info(`Prompt-Detected: type=${body?.type}, title="${body?.title?.slice(0, 30)}", options=${body?.options?.length}`);
+
+      if (!body?.sessionId || !body?.options || body.options.length === 0) {
+        log.warn("Prompt-Detected: Missing required fields");
+        response = jsonResponse({ error: "Missing sessionId or options" }, 400);
+      } else {
+        // Send dynamic prompt notification to Telegram
+        await sendDynamicPromptNotification(
+          body.sessionId,
+          body.type,
+          body.title,
+          body.options,
+          body.cwd
+        );
+        response = jsonResponse({ success: true, message: "Prompt notification sent" });
+      }
     } else {
       response = jsonResponse({ error: "Not found" }, 404);
     }
   } catch (error) {
-    console.error("Request error:", error);
+    log.error("Request error", { error: String(error) });
     response = jsonResponse({ error: "Internal server error" }, 500);
   }
 
@@ -398,7 +467,7 @@ async function handleRequest(req: Request): Promise<Response> {
  * Start the server
  */
 async function main() {
-  console.log(`
+  log.info(`
 ╔═══════════════════════════════════════════════════╗
 ║          Claude-Call Authorization Server         ║
 ╠═══════════════════════════════════════════════════╣
@@ -410,13 +479,13 @@ async function main() {
 `);
 
   // Verify Telegram connection
-  console.log("Verifying Telegram connection...");
+  log.info("Verifying Telegram connection...");
   const connected = await sendTestMessage();
   if (!connected) {
-    console.error("Failed to connect to Telegram. Check your bot token and chat ID.");
+    log.fatal("Failed to connect to Telegram. Check your bot token and chat ID.");
     process.exit(1);
   }
-  console.log("✓ Telegram connection verified");
+  log.info("Telegram connection verified");
 
   // Set up bot commands for "/" autocomplete
   await setupBotCommands();
@@ -437,11 +506,11 @@ async function main() {
     fetch: handleRequest,
   });
 
-  console.log(`✓ Server listening on http://localhost:${server.port}`);
-  console.log(`
+  log.info(`Server listening on http://localhost:${server.port}`);
+  log.info(`
 Ready to receive authorization requests!
 Hook endpoint: POST http://localhost:${server.port}/authorize
 `);
 }
 
-main().catch(console.error);
+main().catch((err) => log.fatal("Main process error", { error: String(err) }));

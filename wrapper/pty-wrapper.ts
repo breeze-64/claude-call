@@ -11,6 +11,9 @@
  */
 
 import { $ } from "bun";
+import { createLogger } from "../server/logger";
+
+const log = createLogger("PTY");
 
 const SERVER_URL = process.env.CLAUDE_CALL_SERVER_URL || "http://localhost:3847";
 const POLL_INTERVAL = 1000;
@@ -20,8 +23,9 @@ interface PendingTask {
   sessionId: string;
   message: string;
   createdAt: number;
-  type?: "message" | "keystroke";  // Task type: message (default) or keystroke for PTY key injection
+  type?: "message" | "keystroke" | "sequence";  // Task type: message (default), keystroke for single key, or sequence for multiple keys
   requestId?: string;               // Associated request ID (for AskUserQuestion answers)
+  sequence?: string[];              // Array of keystrokes for sequence type
 }
 
 interface Session {
@@ -53,7 +57,7 @@ async function registerSession(): Promise<Session | null> {
       return data.session;
     }
   } catch (error) {
-    console.error("[PTY] Failed to register session:", error);
+    log.error("Failed to register session", { error: String(error) });
   }
   return null;
 }
@@ -117,67 +121,112 @@ interface InjectionResult {
 }
 
 /**
+ * Send a single keystroke to tmux session
+ * Returns success/failure status
+ */
+async function sendKeystroke(tmuxSession: string, keystroke: string): Promise<InjectionResult> {
+  // Check keystroke type:
+  // 1. Single digit (1-9): option selection, send directly
+  // 2. Special keys (Tab, Enter, Escape, etc.): send as tmux key name
+  // 3. Custom text: send with -l flag for literal interpretation + Enter
+  const isNumericKeystroke = /^\d$/.test(keystroke);
+  const isSpecialKey = /^(Tab|Enter|Escape|Space|BSpace|Up|Down|Left|Right|Home|End|PageUp|PageDown)$/i.test(keystroke);
+
+  if (isNumericKeystroke || isSpecialKey) {
+    // Single digit or special key - send directly without -l flag
+    // tmux recognizes key names like Tab, Enter, etc.
+    const sendKey = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, keystroke], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const exitCode = await sendKey.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(sendKey.stderr).text();
+      log.error(`tmux send-keys failed (${exitCode}): ${stderr}`);
+      return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${exitCode}`}` };
+    }
+    return { success: true };
+  } else {
+    // Custom text - send with -l flag for literal interpretation, then Enter
+    const sendText = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "-l", keystroke], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const textExitCode = await sendText.exited;
+    if (textExitCode !== 0) {
+      const stderr = await new Response(sendText.stderr).text();
+      log.error(`tmux send-keys (text) failed (${textExitCode}): ${stderr}`);
+      return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${textExitCode}`}` };
+    }
+
+    const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const enterExitCode = await sendEnter.exited;
+    if (enterExitCode !== 0) {
+      const stderr = await new Response(sendEnter.stderr).text();
+      log.error(`tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
+      return { success: false, error: `tmux Enter 失败: ${stderr.trim() || `exit code ${enterExitCode}`}` };
+    }
+    return { success: true };
+  }
+}
+
+/**
  * Inject a task using tmux send-keys
- * Handles both regular message tasks and keystroke tasks differently
+ * Handles regular message tasks, keystroke tasks, and sequence tasks differently
  * Returns success/failure status for notification
  */
 async function injectTask(tmuxSession: string, task: PendingTask): Promise<InjectionResult> {
   const isKeystroke = task.type === "keystroke";
+  const isSequence = task.type === "sequence";
 
-  if (isKeystroke) {
-    console.log(`\r\n[PTY] Injecting keystroke: "${task.message}"\r\n`);
+  if (isSequence) {
+    log.info(`Injecting sequence: [${task.sequence?.join(", ")}]`);
+  } else if (isKeystroke) {
+    log.info(`Injecting keystroke: "${task.message}"`);
   } else {
-    console.log(`\r\n[PTY] Injecting task: "${task.message.slice(0, 50)}..."\r\n`);
+    log.info(`Injecting task: "${task.message.slice(0, 50)}..."`);
   }
 
   try {
-    if (isKeystroke) {
+    if (isSequence && task.sequence) {
+      // === SEQUENCE INJECTION ===
+      // Send multiple keystrokes with delays between them
+      // Used for multi-step interactions (e.g., select option + Tab + Enter)
+      await Bun.sleep(100); // Initial delay for UI readiness
+
+      for (let i = 0; i < task.sequence.length; i++) {
+        const keystroke = task.sequence[i];
+        log.debug(`Sending sequence step ${i + 1}/${task.sequence.length}: "${keystroke}"`);
+
+        const result = await sendKeystroke(tmuxSession, keystroke);
+        if (!result.success) {
+          return { success: false, error: `序列第 ${i + 1} 步失败: ${result.error}` };
+        }
+
+        // Delay between keystrokes to allow UI to process
+        // Longer delay after non-special keys (like digits) to let the UI update
+        if (i < task.sequence.length - 1) {
+          const delayMs = /^\d$/.test(keystroke) ? 300 : 150;
+          await Bun.sleep(delayMs);
+        }
+      }
+
+      log.info("Sequence injected successfully");
+      return { success: true };
+    } else if (isKeystroke) {
       // === KEYSTROKE INJECTION ===
       // Small delay to ensure Claude Code UI is ready to receive input
       await Bun.sleep(100);
 
-      // Check if it's a single digit (option selection in Claude Code UI)
-      const isNumericKeystroke = /^\d$/.test(task.message);
-
-      if (isNumericKeystroke) {
-        // Single digit - send directly without -l flag (no Enter needed)
-        // Claude Code's selection UI responds immediately to digit keys
-        const sendKey = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, task.message], {
-          stdout: "ignore",
-          stderr: "pipe",
-        });
-        const exitCode = await sendKey.exited;
-        if (exitCode !== 0) {
-          const stderr = await new Response(sendKey.stderr).text();
-          console.error(`[PTY] tmux send-keys failed (${exitCode}): ${stderr}`);
-          return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${exitCode}`}` };
-        }
-      } else {
-        // Custom text - send with -l flag for literal interpretation, then Enter
-        const sendText = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "-l", task.message], {
-          stdout: "ignore",
-          stderr: "pipe",
-        });
-        const textExitCode = await sendText.exited;
-        if (textExitCode !== 0) {
-          const stderr = await new Response(sendText.stderr).text();
-          console.error(`[PTY] tmux send-keys (text) failed (${textExitCode}): ${stderr}`);
-          return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${textExitCode}`}` };
-        }
-
-        const sendEnter = Bun.spawn(["tmux", "send-keys", "-t", tmuxSession, "Enter"], {
-          stdout: "ignore",
-          stderr: "pipe",
-        });
-        const enterExitCode = await sendEnter.exited;
-        if (enterExitCode !== 0) {
-          const stderr = await new Response(sendEnter.stderr).text();
-          console.error(`[PTY] tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
-          return { success: false, error: `tmux Enter 失败: ${stderr.trim() || `exit code ${enterExitCode}`}` };
-        }
+      const result = await sendKeystroke(tmuxSession, task.message);
+      if (!result.success) {
+        return result;
       }
 
-      console.log(`[PTY] Keystroke injected successfully\r\n`);
+      log.info("Keystroke injected successfully");
       return { success: true };
     } else {
       // === REGULAR MESSAGE INJECTION ===
@@ -189,7 +238,7 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<Injec
       const textExitCode = await sendText.exited;
       if (textExitCode !== 0) {
         const stderr = await new Response(sendText.stderr).text();
-        console.error(`[PTY] tmux send-keys failed (${textExitCode}): ${stderr}`);
+        log.error(`tmux send-keys failed (${textExitCode}): ${stderr}`);
         return { success: false, error: `tmux send-keys 失败: ${stderr.trim() || `exit code ${textExitCode}`}` };
       }
 
@@ -200,16 +249,16 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<Injec
       const enterExitCode = await sendEnter.exited;
       if (enterExitCode !== 0) {
         const stderr = await new Response(sendEnter.stderr).text();
-        console.error(`[PTY] tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
+        log.error(`tmux send-keys (enter) failed (${enterExitCode}): ${stderr}`);
         return { success: false, error: `tmux Enter 失败: ${stderr.trim() || `exit code ${enterExitCode}`}` };
       }
 
-      console.log(`[PTY] Task injected successfully\r\n`);
+      log.info("Task injected successfully");
       return { success: true };
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error(`[PTY] Injection failed:`, error);
+    log.error("Injection failed", { error: errorMsg });
     return { success: false, error: `注入异常: ${errorMsg}` };
   }
 }
@@ -218,6 +267,221 @@ async function injectTask(tmuxSession: string, task: PendingTask): Promise<Injec
 let serverConnected = true;
 let lastHealthCheck = Date.now();
 const HEALTH_CHECK_INTERVAL = 30000; // Check tmux health every 30 seconds
+
+// Terminal monitoring state
+const PROMPT_MONITOR_INTERVAL = 500; // Check for prompts every 500ms
+let lastPromptHash = ""; // Track last detected prompt to avoid duplicates
+let lastPromptTime = 0; // Debounce prompt detection
+
+/**
+ * Detected prompt from terminal
+ */
+interface DetectedPrompt {
+  type: "permission" | "question" | "unknown";
+  title: string;
+  options: Array<{ number: string; label: string }>;
+  rawContent: string;
+}
+
+/**
+ * Capture terminal content using tmux capture-pane
+ */
+async function captureTerminal(tmuxSession: string): Promise<string> {
+  try {
+    const proc = Bun.spawn(["tmux", "capture-pane", "-t", tmuxSession, "-p"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+    return output;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Strip ANSI escape codes from text
+ */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+}
+
+/**
+ * Detect if terminal is showing an interactive prompt
+ * Returns null if no prompt detected, or prompt details if found
+ */
+function detectPrompt(terminalContent: string): DetectedPrompt | null {
+  const clean = stripAnsi(terminalContent);
+  const lines = clean.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+
+  if (lines.length < 3) return null;
+
+  // Look for numbered options pattern (common in Claude Code prompts)
+  // Format: "1. Option text" or "1) Option text"
+  const optionPattern = /^(\d+)[.)]\s+(.+)$/;
+  const options: Array<{ number: string; label: string }> = [];
+  let titleLineIndex = -1;
+
+  // Scan from bottom up to find options (they're usually at the bottom)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const match = line.match(optionPattern);
+
+    if (match) {
+      options.unshift({ number: match[1], label: match[2] });
+    } else if (options.length > 0) {
+      // We've found options and now hit a non-option line
+      // This might be the title/question
+      titleLineIndex = i;
+      break;
+    }
+  }
+
+  // Need at least 2 options to be considered a prompt
+  if (options.length < 2) {
+    // Check for permission-style prompts (Yes/No patterns)
+    const lastFewLines = lines.slice(-10).join("\n");
+
+    // Claude Code permission prompt patterns
+    if (lastFewLines.includes("Allow") && lastFewLines.includes("Deny")) {
+      return {
+        type: "permission",
+        title: "Permission Request",
+        options: [
+          { number: "1", label: "Yes" },
+          { number: "2", label: "Yes, allow all" },
+          { number: "3", label: "No" },
+        ],
+        rawContent: lastFewLines,
+      };
+    }
+
+    // Check for "? " at start of line (common prompt indicator)
+    const questionLine = lines.find(l => l.startsWith("?") || l.includes("?"));
+    if (questionLine && lastFewLines.match(/\d+[.)]/)) {
+      // There's a question and numbered items, try to parse
+      const allOptions: Array<{ number: string; label: string }> = [];
+      for (const line of lines.slice(-15)) {
+        const m = line.match(optionPattern);
+        if (m) {
+          allOptions.push({ number: m[1], label: m[2] });
+        }
+      }
+      if (allOptions.length >= 2) {
+        return {
+          type: "question",
+          title: questionLine.replace(/^\?\s*/, ""),
+          options: allOptions,
+          rawContent: lastFewLines,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  // Extract title from lines before options
+  let title = "请选择";
+  if (titleLineIndex >= 0) {
+    // Look for question mark or meaningful title
+    for (let i = titleLineIndex; i >= Math.max(0, titleLineIndex - 3); i--) {
+      const line = lines[i];
+      if (line.includes("?") || line.length > 10) {
+        title = line.replace(/^\?\s*/, "");
+        break;
+      }
+    }
+  }
+
+  // Determine type
+  const rawContent = lines.slice(Math.max(0, titleLineIndex - 2)).join("\n");
+  const type = rawContent.toLowerCase().includes("allow") ||
+               rawContent.toLowerCase().includes("permission") ? "permission" : "question";
+
+  return { type, title, options, rawContent };
+}
+
+/**
+ * Simple hash function for prompt content
+ */
+function hashPrompt(prompt: DetectedPrompt): string {
+  return `${prompt.type}:${prompt.options.map(o => o.label).join("|")}`;
+}
+
+/**
+ * Send prompt notification to server
+ */
+async function sendPromptNotification(
+  sessionId: string,
+  prompt: DetectedPrompt,
+  cwd: string
+): Promise<void> {
+  try {
+    await fetch(`${SERVER_URL}/prompt-detected`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        type: prompt.type,
+        title: prompt.title,
+        options: prompt.options,
+        rawContent: prompt.rawContent,
+        cwd,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    log.info(`Prompt notification sent: ${prompt.type} with ${prompt.options.length} options`);
+  } catch (error) {
+    log.error("Failed to send prompt notification", { error: String(error) });
+  }
+}
+
+/**
+ * Start the terminal monitoring loop
+ * Watches for interactive prompts and sends notifications to Telegram
+ */
+async function startPromptMonitoring(sessionId: string, tmuxSession: string, cwd: string): Promise<void> {
+  // Wait for session to initialize
+  await Bun.sleep(3000);
+
+  log.info("Starting terminal prompt monitoring...");
+
+  while (!isShuttingDown) {
+    try {
+      const content = await captureTerminal(tmuxSession);
+      const prompt = detectPrompt(content);
+
+      if (prompt) {
+        const hash = hashPrompt(prompt);
+        const now = Date.now();
+
+        // Only send notification if this is a new prompt (different from last one)
+        // and enough time has passed (debounce)
+        if (hash !== lastPromptHash && now - lastPromptTime > 1000) {
+          lastPromptHash = hash;
+          lastPromptTime = now;
+
+          log.info(`Detected ${prompt.type} prompt: "${prompt.title}" with ${prompt.options.length} options`);
+          await sendPromptNotification(sessionId, prompt, cwd);
+        }
+      } else {
+        // No prompt detected - reset state after a delay
+        // This allows detecting the same prompt again if it reappears
+        if (lastPromptHash && Date.now() - lastPromptTime > 5000) {
+          lastPromptHash = "";
+        }
+      }
+    } catch (error) {
+      if (!isShuttingDown) {
+        log.error("Prompt monitoring error", { error: String(error) });
+      }
+    }
+
+    await Bun.sleep(PROMPT_MONITOR_INTERVAL);
+  }
+}
 
 /**
  * Start the task polling loop
@@ -232,7 +496,7 @@ async function startTaskPolling(sessionId: string, tmuxSession: string): Promise
       lastHealthCheck = Date.now();
       const alive = await isTmuxSessionAlive(tmuxSession);
       if (!alive) {
-        console.error(`[PTY] tmux session ${tmuxSession} is dead!`);
+        log.error(`tmux session ${tmuxSession} is dead!`);
         await sendServerNotification(
           `💀 *会话已结束*\n\n📋 会话: ${currentSession?.name || tmuxSession}\n\ntmux 会话已不存在`
         );
@@ -248,7 +512,7 @@ async function startTaskPolling(sessionId: string, tmuxSession: string): Promise
       // Track connection recovery
       if (!serverConnected) {
         serverConnected = true;
-        console.log("[PTY] Server connection restored");
+        log.info("Server connection restored");
         await sendServerNotification(
           `🔄 *连接已恢复*\n\n📋 会话: ${currentSession?.name || tmuxSession}\n\nPTY wrapper 已重新连接到服务器`
         );
@@ -265,9 +529,9 @@ async function startTaskPolling(sessionId: string, tmuxSession: string): Promise
         // Track connection loss
         if (serverConnected) {
           serverConnected = false;
-          console.error("[PTY] Lost connection to server");
+          log.error("Lost connection to server");
         }
-        console.error("[PTY] Task polling error:", error);
+        log.error("Task polling error", { error: String(error) });
       }
     }
 
@@ -327,7 +591,7 @@ async function killTmuxSession(tmuxSession: string): Promise<void> {
  * Main entry point
  */
 async function main(): Promise<void> {
-  console.log(`
+  log.info(`
 ╔═══════════════════════════════════════════════════╗
 ║           Claude-Call PTY Wrapper                 ║
 ╠═══════════════════════════════════════════════════╣
@@ -343,21 +607,21 @@ async function main(): Promise<void> {
       signal: AbortSignal.timeout(3000),
     });
     if (response.ok) {
-      console.log("✓ Server connection verified");
+      log.info("Server connection verified");
 
       // Register session
       currentSession = await registerSession();
       if (currentSession) {
-        console.log(`✓ Session registered: ${currentSession.name} (${currentSession.shortId})\n`);
+        log.info(`Session registered: ${currentSession.name} (${currentSession.shortId})`);
       } else {
-        console.log("⚠ Failed to register session - task injection may not work\n");
+        log.warn("Failed to register session - task injection may not work");
       }
     } else {
-      console.log("⚠ Server responded but with error - continuing anyway\n");
+      log.warn("Server responded but with error - continuing anyway");
     }
   } catch {
-    console.log("⚠ Server not available - task injection disabled\n");
-    console.log("  Run 'bun run start' to start the server\n");
+    log.warn("Server not available - task injection disabled");
+    log.warn("Run 'bun run start' to start the server");
   }
 
   // Check for headless mode (for Telegram /claude-call command)
@@ -374,16 +638,33 @@ async function main(): Promise<void> {
     ? `${claudePath} ${claudeArgs.join(" ")}`
     : claudePath;
 
-  console.log(`Starting claude in tmux session '${tmuxSession}'...\n`);
+  log.info(`Starting claude in tmux session '${tmuxSession}'...`);
 
   // Create a new tmux session running claude
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
+  // Build environment variables string for tmux
+  // Include proxy vars so Claude can access the API
+  const proxyVars = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"];
+  const envExports = proxyVars
+    .filter(v => process.env[v])
+    .map(v => `export ${v}="${process.env[v]}"`)
+    .join("; ");
+
+  // Wrap claude command with environment setup
+  const wrappedCmd = envExports
+    ? `${envExports}; ${claudeCmd}`
+    : claudeCmd;
+
+  if (envExports) {
+    log.debug("Proxy vars detected, passing to tmux session");
+  }
+
   try {
-    await $`tmux new-session -d -s ${tmuxSession} -x ${cols} -y ${rows} ${claudeCmd}`.quiet();
+    await $`tmux new-session -d -s ${tmuxSession} -x ${cols} -y ${rows} ${wrappedCmd}`.quiet();
   } catch (error) {
-    console.error("Failed to create tmux session:", error);
+    log.error("Failed to create tmux session", { error: String(error) });
     if (currentSession) {
       await unregisterSession(currentSession.id);
     }
@@ -406,12 +687,13 @@ async function main(): Promise<void> {
   // Start task polling in the background (only if session registered)
   if (currentSession) {
     startTaskPolling(currentSession.id, tmuxSession);
+    // Note: Terminal prompt monitoring is disabled - we use hook notifications instead
   }
 
   if (isHeadless) {
     // Headless mode: don't attach, just keep running for task polling
-    console.log(`[PTY] Running in headless mode, session: ${tmuxSession}`);
-    console.log(`[PTY] Use 'tmux attach-session -t ${tmuxSession}' to attach manually`);
+    log.info(`Running in headless mode, session: ${tmuxSession}`);
+    log.info(`Use 'tmux attach-session -t ${tmuxSession}' to attach manually`);
 
     // Keep process alive for task polling
     while (!isShuttingDown) {
@@ -447,7 +729,7 @@ async function cleanup(tmuxSession: string): Promise<void> {
 
   // Unregister session
   if (currentSession) {
-    console.log(`\n[PTY] Unregistering session ${currentSession.shortId}...`);
+    log.info(`Unregistering session ${currentSession.shortId}...`);
     await unregisterSession(currentSession.id);
   }
 
@@ -467,6 +749,6 @@ process.on("SIGTERM", async () => {
 });
 
 main().catch((error) => {
-  console.error("[PTY] Fatal error:", error);
+  log.fatal("Fatal error", { error: String(error) });
   process.exit(1);
 });

@@ -6,14 +6,19 @@
  * 2. Tasks per session for PTY injection
  */
 
+import { createLogger } from "./logger";
+
+const log = createLogger("TaskQueue");
+
 export interface PendingTask {
   id: string;
   sessionId: string;
   message: string;
   createdAt: number;
   acknowledged: boolean;
-  type?: "message" | "keystroke";  // Task type: message (default) or keystroke for PTY key injection
+  type?: "message" | "keystroke" | "sequence";  // Task type: message (default), keystroke for single key, or sequence for multiple keys
   requestId?: string;               // Associated request ID (for AskUserQuestion answers)
+  sequence?: string[];              // Array of keystrokes for sequence type
 }
 
 export interface Session {
@@ -66,7 +71,7 @@ export function registerSession(name?: string, cwd?: string): Session {
   };
 
   sessions.set(id, session);
-  console.log(`[Session] Registered: ${session.name} (${shortId})`);
+  log.info(`Session registered: ${session.name} (${shortId})`);
   return session;
 }
 
@@ -83,7 +88,7 @@ export function unregisterSession(sessionId: string): boolean {
         tasks.delete(taskId);
       }
     }
-    console.log(`[Session] Unregistered: ${session.name}`);
+    log.info(`Session unregistered: ${session.name}`);
     return true;
   }
   return false;
@@ -152,9 +157,7 @@ export function addTask(sessionId: string, message: string): PendingTask {
 
   const session = sessions.get(sessionId);
   const sessionName = session?.name || sessionId.slice(0, 8);
-  console.log(
-    `[TaskQueue] Task added for ${sessionName}: ${task.id.slice(0, 8)}... "${task.message.slice(0, 50)}"`
-  );
+  log.info(`Task added for ${sessionName}: ${task.id.slice(0, 8)}... "${task.message.slice(0, 50)}"`);
   return task;
 }
 
@@ -181,9 +184,36 @@ export function addKeystrokeTask(
 
   const session = sessions.get(sessionId);
   const sessionName = session?.name || sessionId.slice(0, 8);
-  console.log(
-    `[TaskQueue] Keystroke task added for ${sessionName}: "${keystroke}"`
-  );
+  log.info(`Keystroke task added for ${sessionName}: "${keystroke}"`);
+  return task;
+}
+
+/**
+ * Add a sequence task for PTY injection (multiple keystrokes with delays)
+ * Used for multi-step interactions like AskUserQuestion with multiple questions
+ * Each keystroke in the sequence is sent with a small delay between them
+ */
+export function addSequenceTask(
+  sessionId: string,
+  keystrokes: string[],
+  requestId?: string
+): PendingTask {
+  const task: PendingTask = {
+    id: crypto.randomUUID(),
+    sessionId,
+    message: keystrokes.join(" → "), // Human-readable representation
+    createdAt: Date.now(),
+    acknowledged: false,
+    type: "sequence",
+    sequence: keystrokes,
+    requestId,
+  };
+  tasks.set(task.id, task);
+  touchSession(sessionId);
+
+  const session = sessions.get(sessionId);
+  const sessionName = session?.name || sessionId.slice(0, 8);
+  log.info(`Sequence task added for ${sessionName}: [${keystrokes.join(", ")}]`);
   return task;
 }
 
@@ -236,9 +266,7 @@ export function getPendingTasks(sessionId: string): PendingTask[] {
     });
 
   if (pending.length > 0) {
-    console.log(
-      `[TaskQueue] Returning ${pending.length} pending task(s) for session ${sessionId.slice(0, 8)}`
-    );
+    log.debug(`Returning ${pending.length} pending task(s) for session ${sessionId.slice(0, 8)}`);
   }
   return pending;
 }
@@ -266,7 +294,7 @@ export function acknowledgeTask(
 
   task.acknowledged = true;
   const status = completion?.success === false ? "failed" : "completed";
-  console.log(`[TaskQueue] Task ${status}: ${taskId.slice(0, 8)}...`);
+  log.info(`Task ${status}: ${taskId.slice(0, 8)}...`);
 
   // Update session activity
   touchSession(task.sessionId);
@@ -275,7 +303,7 @@ export function acknowledgeTask(
   // Schedule cleanup after delay
   setTimeout(() => {
     tasks.delete(taskId);
-    console.log(`[TaskQueue] Task cleaned up: ${taskId.slice(0, 8)}...`);
+    log.debug(`Task cleaned up: ${taskId.slice(0, 8)}...`);
   }, CLEANUP_DELAY);
 
   return { task, session };
@@ -313,9 +341,7 @@ export function cleanupTasks(): void {
   }
 
   if (cleanedTasks > 0 || cleanedSessions > 0) {
-    console.log(
-      `[Cleanup] Removed ${cleanedTasks} task(s), ${cleanedSessions} session(s)`
-    );
+    log.info(`Cleanup removed ${cleanedTasks} task(s), ${cleanedSessions} session(s)`);
   }
 }
 

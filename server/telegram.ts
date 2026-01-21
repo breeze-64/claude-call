@@ -21,11 +21,15 @@ import {
   addTaskToDefaultSession,
   addTaskToSession,
   addKeystrokeTask,
+  addSequenceTask,
   getAllSessions,
   getSession,
   getSessionCount,
   type Session,
 } from "./task-queue";
+import { createLogger } from "./logger";
+
+const log = createLogger("Telegram");
 
 // Store pending task messages waiting for session selection (with timestamp for cleanup)
 const pendingTaskMessages = new Map<number, { text: string; messageId: number; createdAt: number }>();
@@ -37,8 +41,8 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 if (!BOT_TOKEN || !CHAT_ID) {
-  console.error("Missing required environment variables: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID");
-  console.error("Please create a .env file based on .env.example");
+  log.fatal("Missing required environment variables: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID");
+  log.fatal("Please create a .env file based on .env.example");
   process.exit(1);
 }
 
@@ -57,7 +61,7 @@ async function callApi<T>(method: string, body?: object): Promise<T> {
   });
   const result = await response.json();
   if (!result.ok) {
-    console.error(`Telegram API error (${method}):`, result);
+    log.error(`Telegram API error (${method})`, result);
     throw new Error(result.description || "Telegram API error");
   }
   return result.result;
@@ -262,10 +266,412 @@ _点击按钮将注入按键到终端_`;
       reply_markup: keyboard,
     });
 
-    console.log(`[Telegram] Sent auth notification: ${notificationId} for ${toolName}`);
+    log.info(`Sent auth notification: ${notificationId} for ${toolName}`);
   } catch (error) {
-    console.error("Failed to send auth notification:", error);
+    log.error("Failed to send auth notification", { error: String(error) });
   }
+}
+
+/**
+ * Create inline keyboard for PTY question notification
+ * Maps option IDs (A, B, C...) to keystroke numbers (1, 2, 3...)
+ */
+function createPtyQuestionKeyboard(
+  notificationId: string,
+  options: Array<{ id: string; label: string; description?: string }>
+): TelegramInlineKeyboard {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  let currentRow: Array<{ text: string; callback_data: string }> = [];
+
+  for (let i = 0; i < options.length; i++) {
+    const opt = options[i];
+    // Use 1-based index for keystroke (terminal shows 1, 2, 3...)
+    const keystroke = String(i + 1);
+    currentRow.push({
+      text: opt.label.length > 20 ? opt.label.slice(0, 18) + ".." : opt.label,
+      callback_data: `qpty:${notificationId}:${keystroke}:${opt.label.slice(0, 20)}`,
+    });
+
+    if (currentRow.length >= 2) {
+      rows.push(currentRow);
+      currentRow = [];
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return { inline_keyboard: rows };
+}
+
+/**
+ * Send question notification to Telegram for PTY keystroke injection
+ * This does NOT block - just sends a notification with option buttons
+ * When user clicks, the option number (1/2/3...) is injected into the terminal
+ */
+export async function sendQuestionNotification(
+  sessionId: string,
+  question: string,
+  options: Array<{ id: string; label: string; description?: string }>,
+  cwd?: string
+): Promise<void> {
+  try {
+    const sessionShort = sessionId.slice(0, 8);
+    const notificationId = crypto.randomUUID().slice(0, 8);
+
+    let optionsText = "";
+    if (options.length > 0) {
+      optionsText = options
+        .map((opt, i) => {
+          const desc = opt.description ? `\n   ${opt.description}` : "";
+          return `*${i + 1}*. ${opt.label}${desc}`;
+        })
+        .join("\n\n");
+    }
+
+    const message = `❓ *${question}*
+
+🔑 Session: \`${sessionShort}...\`
+${cwd ? `📂 目录: \`${cwd}\`\n` : ""}
+${optionsText}
+
+_点击按钮将注入按键到终端_`;
+
+    const keyboard = createPtyQuestionKeyboard(notificationId, options);
+
+    await callApi<{ message_id: number }>("sendMessage", {
+      chat_id: CHAT_ID,
+      text: message,
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+
+    log.info(`Sent question notification: ${notificationId} with ${options.length} options`);
+  } catch (error) {
+    log.error("Failed to send question notification", { error: String(error) });
+  }
+}
+
+/**
+ * Create inline keyboard for dynamically detected prompts
+ * Uses actual options parsed from terminal
+ */
+function createDynamicPromptKeyboard(
+  notificationId: string,
+  options: Array<{ number: string; label: string }>
+): TelegramInlineKeyboard {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  let currentRow: Array<{ text: string; callback_data: string }> = [];
+
+  for (const opt of options) {
+    // Truncate label for button display
+    const displayLabel = opt.label.length > 25 ? opt.label.slice(0, 23) + ".." : opt.label;
+    currentRow.push({
+      text: `${opt.number}. ${displayLabel}`,
+      callback_data: `dyn:${notificationId}:${opt.number}:${opt.label.slice(0, 20)}`,
+    });
+
+    if (currentRow.length >= 2) {
+      rows.push(currentRow);
+      currentRow = [];
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return { inline_keyboard: rows };
+}
+
+/**
+ * Send dynamic prompt notification to Telegram
+ * Called by PTY wrapper when it detects an actual prompt in the terminal
+ * Options are parsed from terminal content, not hardcoded
+ */
+export async function sendDynamicPromptNotification(
+  sessionId: string,
+  type: "permission" | "question" | "unknown",
+  title: string,
+  options: Array<{ number: string; label: string }>,
+  cwd?: string
+): Promise<void> {
+  try {
+    const sessionShort = sessionId.slice(0, 8);
+    const notificationId = crypto.randomUUID().slice(0, 8);
+
+    const typeEmoji = type === "permission" ? "🔐" : type === "question" ? "❓" : "📋";
+    const typeLabel = type === "permission" ? "权限请求" : type === "question" ? "选择提示" : "交互提示";
+
+    // Format options list
+    const optionsText = options
+      .map((opt) => `*${opt.number}.* ${opt.label}`)
+      .join("\n");
+
+    const message = `${typeEmoji} *${typeLabel}*
+
+📝 ${title}
+
+🔑 Session: \`${sessionShort}...\`
+${cwd ? `📂 目录: \`${cwd}\`\n` : ""}
+${optionsText}
+
+_点击按钮将注入按键到终端_`;
+
+    const keyboard = createDynamicPromptKeyboard(notificationId, options);
+
+    await callApi<{ message_id: number }>("sendMessage", {
+      chat_id: CHAT_ID,
+      text: message,
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+
+    log.info(`Sent dynamic prompt notification: ${notificationId} (${type}) with ${options.length} options`);
+  } catch (error) {
+    log.error("Failed to send dynamic prompt notification", { error: String(error) });
+  }
+}
+
+/**
+ * Multi-question state tracking
+ * Maps notificationId to current question index and total questions
+ */
+interface MultiQuestionState {
+  sessionId: string;
+  questions: Array<{
+    header: string;
+    question: string;
+    options: Array<{ id: string; label: string; description?: string }>;
+  }>;
+  currentIndex: number;
+  answers: string[]; // Selected option labels for each question
+  messageId?: number;
+  cwd?: string;
+  createdAt: number; // For timeout cleanup
+}
+
+const multiQuestionStates = new Map<string, MultiQuestionState>();
+
+// Multi-question state timeout: 10 minutes
+const MULTI_QUESTION_TIMEOUT = 10 * 60 * 1000;
+
+/**
+ * Create inline keyboard for multi-question selection
+ * Shows options for current question, with navigation context
+ */
+function createMultiQuestionKeyboard(
+  notificationId: string,
+  state: MultiQuestionState
+): TelegramInlineKeyboard {
+  const currentQ = state.questions[state.currentIndex];
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  let currentRow: Array<{ text: string; callback_data: string }> = [];
+
+  for (const opt of currentQ.options) {
+    const displayLabel = opt.label.length > 22 ? opt.label.slice(0, 20) + ".." : opt.label;
+    currentRow.push({
+      text: displayLabel,
+      // mq = multi-question, format: mq:notificationId:optionId
+      callback_data: `mq:${notificationId}:${opt.id}`,
+    });
+
+    if (currentRow.length >= 2) {
+      rows.push(currentRow);
+      currentRow = [];
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return { inline_keyboard: rows };
+}
+
+/**
+ * Format multi-question message showing progress
+ */
+function formatMultiQuestionMessage(state: MultiQuestionState): string {
+  const { questions, currentIndex, answers } = state;
+  const sessionShort = state.sessionId.slice(0, 8);
+
+  // Build progress indicator: ✅ 编程语言 → 📍 Web框架 → ⬜ 数据库 → ⬜ Submit
+  const progressParts = questions.map((q, i) => {
+    const header = q.header || `问题${i + 1}`;
+    if (i < currentIndex) {
+      return `✅ ${header}`;
+    } else if (i === currentIndex) {
+      return `📍 *${header}*`;
+    } else {
+      return `⬜ ${header}`;
+    }
+  });
+  progressParts.push(currentIndex >= questions.length ? "✅ Submit" : "⬜ Submit");
+  const progressLine = progressParts.join(" → ");
+
+  // Show previous answers
+  let answersText = "";
+  if (answers.length > 0) {
+    answersText = "\n\n*已选择:*\n" + answers.map((ans, i) => {
+      const header = questions[i].header || `问题${i + 1}`;
+      return `• ${header}: ${ans}`;
+    }).join("\n");
+  }
+
+  // Current question
+  const currentQ = questions[currentIndex];
+  const optionsText = currentQ.options
+    .map((opt, i) => `*${i + 1}.* ${opt.label}${opt.description ? `\n   ${opt.description}` : ""}`)
+    .join("\n");
+
+  return `❓ *多步骤选择* (${currentIndex + 1}/${questions.length})
+
+${progressLine}
+
+🔑 Session: \`${sessionShort}...\`
+${state.cwd ? `📂 目录: \`${state.cwd}\`\n` : ""}
+---
+*${currentQ.question}*
+
+${optionsText}
+${answersText}
+
+_点击按钮选择，完成所有选择后自动提交_`;
+}
+
+/**
+ * Send multi-question notification to Telegram
+ * Creates interactive flow for selecting multiple questions with Tab navigation
+ */
+export async function sendMultiQuestionNotification(
+  sessionId: string,
+  questions: Array<{
+    header: string;
+    question: string;
+    options: Array<{ id: string; label: string; description?: string }>;
+  }>,
+  isMultiQuestion: boolean,
+  cwd?: string
+): Promise<void> {
+  try {
+    const notificationId = crypto.randomUUID().slice(0, 8);
+
+    // Initialize state
+    const state: MultiQuestionState = {
+      sessionId,
+      questions,
+      currentIndex: 0,
+      answers: [],
+      cwd,
+      createdAt: Date.now(),
+    };
+    multiQuestionStates.set(notificationId, state);
+
+    const message = formatMultiQuestionMessage(state);
+    const keyboard = createMultiQuestionKeyboard(notificationId, state);
+
+    const result = await callApi<{ message_id: number }>("sendMessage", {
+      chat_id: CHAT_ID,
+      text: message,
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+
+    state.messageId = result.message_id;
+    log.info(`Sent multi-question notification: ${notificationId} with ${questions.length} questions`);
+  } catch (error) {
+    log.error("Failed to send multi-question notification", { error: String(error) });
+  }
+}
+
+/**
+ * Handle multi-question option selection
+ * Injects keystroke sequence for navigation
+ */
+export async function handleMultiQuestionCallback(
+  notificationId: string,
+  optionId: string,
+  callbackQuery: TelegramUpdate["callback_query"]
+): Promise<void> {
+  const state = multiQuestionStates.get(notificationId);
+  if (!state) {
+    await answerCallbackQuery(callbackQuery!.id, "选择已过期");
+    return;
+  }
+
+  // Find the most recently active PTY session
+  const allSessions = getAllSessions();
+  if (allSessions.length === 0) {
+    await answerCallbackQuery(callbackQuery!.id, "没有活跃的终端会话");
+    return;
+  }
+
+  const targetSession = allSessions[0];
+  const currentQ = state.questions[state.currentIndex];
+  const selectedOption = currentQ.options.find(o => o.id === optionId);
+  const optionLabel = selectedOption?.label || optionId;
+
+  // Record the answer
+  state.answers.push(optionLabel);
+
+  // Determine what keystroke sequence to inject
+  const isLastQuestion = state.currentIndex >= state.questions.length - 1;
+
+  if (isLastQuestion) {
+    // Last question: inject option number, then Tab to Submit, then Enter
+    // Use sequence task type to send multiple keys reliably
+    addSequenceTask(targetSession.id, [optionId, "Tab", "Enter"]);
+
+    log.info(`Multi-question final: "${optionId}" + Tab + Enter for ${targetSession.name}`);
+
+    // Update message to show completion
+    try {
+      const finalAnswers = state.answers.map((ans, i) => {
+        const header = state.questions[i].header || `问题${i + 1}`;
+        return `• ${header}: ${ans}`;
+      }).join("\n");
+
+      await callApi("editMessageText", {
+        chat_id: CHAT_ID,
+        message_id: state.messageId,
+        text: `✅ *选择完成*\n\n${finalAnswers}\n\n_已自动提交_`,
+        parse_mode: "Markdown",
+      });
+    } catch {
+      // Message might already be edited
+    }
+
+    // Clean up state
+    multiQuestionStates.delete(notificationId);
+  } else {
+    // Not last question: inject option number, then Tab to next question
+    addSequenceTask(targetSession.id, [optionId, "Tab"]);
+
+    log.info(`Multi-question step ${state.currentIndex + 1}: "${optionId}" + Tab for ${targetSession.name}`);
+
+    // Move to next question
+    state.currentIndex++;
+
+    // Update message with new question
+    try {
+      const newMessage = formatMultiQuestionMessage(state);
+      const newKeyboard = createMultiQuestionKeyboard(notificationId, state);
+
+      await callApi("editMessageText", {
+        chat_id: CHAT_ID,
+        message_id: state.messageId,
+        text: newMessage,
+        parse_mode: "Markdown",
+        reply_markup: newKeyboard,
+      });
+    } catch (error) {
+      log.error("Failed to update multi-question message", { error: String(error) });
+    }
+  }
+
+  await answerCallbackQuery(callbackQuery!.id, `已选择: ${optionLabel}`);
 }
 
 /**
@@ -285,7 +691,7 @@ export async function sendAuthRequest(request: PendingRequest): Promise<void> {
 
     setRequestMessageId(request.id, result.message_id);
   } catch (error) {
-    console.error("Failed to send Telegram message:", error);
+    log.error("Failed to send Telegram message", { error: String(error) });
   }
 }
 
@@ -306,7 +712,7 @@ export async function sendQuestionRequest(request: PendingRequest): Promise<void
 
     setRequestMessageId(request.id, result.message_id);
   } catch (error) {
-    console.error("Failed to send Telegram question:", error);
+    log.error("Failed to send Telegram question", { error: String(error) });
   }
 }
 
@@ -373,7 +779,7 @@ export async function processCallback(
 
   // Verify it's from the correct chat
   if (String(callbackQuery.message.chat.id) !== CHAT_ID) {
-    console.warn("Callback from unauthorized chat:", callbackQuery.message.chat.id);
+    log.warn("Callback from unauthorized chat", { chatId: callbackQuery.message.chat.id });
     return;
   }
 
@@ -402,7 +808,7 @@ export async function processCallback(
 
     // Create keystroke task
     addKeystrokeTask(targetSession.id, keystroke);
-    console.log(`[Telegram] PTY auth keystroke "${keystroke}" queued for ${targetSession.name}`);
+    log.info(`PTY auth keystroke "${keystroke}" queued for ${targetSession.name}`);
 
     // Update the message to show the selection
     const keystrokeLabels: Record<string, string> = {
@@ -424,6 +830,100 @@ export async function processCallback(
     }
 
     await answerCallbackQuery(callbackQuery.id, `已发送: ${label}`);
+    return;
+  }
+
+  // Handle multi-question selection (format: mq:notificationId:optionId)
+  if (data.startsWith("mq:")) {
+    const parts = data.split(":");
+    const notificationId = parts[1];
+    const optionId = parts[2];
+
+    await handleMultiQuestionCallback(notificationId, optionId, callbackQuery);
+    return;
+  }
+
+  // Handle dynamic prompt keystroke injection (format: dyn:notificationId:keystroke:label)
+  // This is for prompts detected by terminal monitoring - inject the option number
+  if (data.startsWith("dyn:")) {
+    const parts = data.split(":");
+    const notificationId = parts[1];
+    const keystroke = parts[2];
+    const optionLabel = parts.slice(3).join(":"); // Label might contain ":"
+
+    // Find the most recently active PTY session
+    const allSessions = getAllSessions();
+    if (allSessions.length === 0) {
+      await answerCallbackQuery(callbackQuery.id, "没有活跃的终端会话");
+      await callApi("sendMessage", {
+        chat_id: CHAT_ID,
+        text: "⚠️ *无活跃会话*\n\n没有可接收按键的终端会话",
+        parse_mode: "Markdown",
+      });
+      return;
+    }
+
+    const targetSession = allSessions[0];
+
+    // Create keystroke task for option selection
+    addKeystrokeTask(targetSession.id, keystroke);
+    log.info(`Dynamic prompt keystroke "${keystroke}" (${optionLabel}) queued for ${targetSession.name}`);
+
+    // Update the message to show the selection
+    try {
+      await callApi("editMessageText", {
+        chat_id: CHAT_ID,
+        message_id: callbackQuery.message.message_id,
+        text: `✅ *已选择: ${optionLabel}*\n\n_按键 ${keystroke} 已发送到 ${targetSession.name}_`,
+        parse_mode: "Markdown",
+      });
+    } catch {
+      // Message might already be edited
+    }
+
+    await answerCallbackQuery(callbackQuery.id, `已选择: ${optionLabel}`);
+    return;
+  }
+
+  // Handle PTY question keystroke injection (format: qpty:notificationId:keystroke:label)
+  // This is for question notifications - inject option number to terminal
+  if (data.startsWith("qpty:")) {
+    const parts = data.split(":");
+    const notificationId = parts[1];
+    const keystroke = parts[2];
+    const optionLabel = parts.slice(3).join(":"); // Label might contain ":"
+
+    // Find the most recently active PTY session
+    const allSessions = getAllSessions();
+    if (allSessions.length === 0) {
+      await answerCallbackQuery(callbackQuery.id, "没有活跃的终端会话");
+      await callApi("sendMessage", {
+        chat_id: CHAT_ID,
+        text: "⚠️ *无活跃会话*\n\n没有可接收按键的终端会话",
+        parse_mode: "Markdown",
+      });
+      return;
+    }
+
+    const targetSession = allSessions[0];
+
+    // Create keystroke task for option selection
+    addKeystrokeTask(targetSession.id, keystroke);
+    log.info(`PTY question keystroke "${keystroke}" (${optionLabel}) queued for ${targetSession.name}`);
+
+    // Update the message to show the selection
+    try {
+      await callApi("editMessageText", {
+        chat_id: CHAT_ID,
+        message_id: callbackQuery.message.message_id,
+        text: `✅ *已选择: ${optionLabel}*\n\n_按键 ${keystroke} 已发送到 ${targetSession.name}_`,
+        parse_mode: "Markdown",
+      });
+    } catch {
+      // Message might already be edited
+    }
+
+    await answerCallbackQuery(callbackQuery.id, `已选择: ${optionLabel}`);
     return;
   }
 
@@ -499,7 +999,7 @@ export async function processCallback(
       // Already numeric
       keystroke = optionId;
     } else {
-      console.warn(`[Telegram] Unexpected option ID format: ${optionId}, defaulting to "1"`);
+      log.warn(`Unexpected option ID format: ${optionId}, defaulting to "1"`);
       keystroke = "1";
     }
 
@@ -510,9 +1010,9 @@ export async function processCallback(
     if (allSessions.length > 0) {
       const targetSession = allSessions[0];
       addKeystrokeTask(targetSession.id, keystroke, requestId);
-      console.log(`[Telegram] Created keystroke task: "${keystroke}" for session ${targetSession.shortId}`);
+      log.info(`Created keystroke task: "${keystroke}" for session ${targetSession.shortId}`);
     } else {
-      console.warn(`[Telegram] No active PTY session, keystroke not sent`);
+      log.warn("No active PTY session, keystroke not sent");
       // Notify user that there's no active session
       await callApi("sendMessage", {
         chat_id: CHAT_ID,
@@ -601,28 +1101,28 @@ export async function processCallback(
 export async function processReplyMessage(
   message: TelegramUpdate["message"]
 ): Promise<void> {
-  console.log("[DEBUG] processReplyMessage called with:", JSON.stringify(message, null, 2));
+  log.debug("processReplyMessage called", { message: JSON.stringify(message).slice(0, 200) });
 
   if (!message?.text || !message.reply_to_message) {
-    console.log("[DEBUG] Skipping - no text or not a reply");
+    log.debug("Skipping - no text or not a reply");
     return;
   }
 
   // Verify it's from the correct chat
   if (String(message.chat.id) !== CHAT_ID) {
-    console.warn("Message from unauthorized chat:", message.chat.id);
+    log.warn("Message from unauthorized chat", { chatId: message.chat.id });
     return;
   }
 
   const replyToMessageId = message.reply_to_message.message_id;
-  console.log("[DEBUG] Looking for request with messageId:", replyToMessageId);
+  log.debug("Looking for request with messageId", { messageId: replyToMessageId });
 
   const request = getRequestByMessageId(replyToMessageId);
-  console.log("[DEBUG] Found request:", request ? request.id : "NOT FOUND");
+  log.debug(`Found request: ${request ? request.id : "NOT FOUND"}`);
 
   if (!request) {
     // Not a reply to our message, ignore
-    console.log("[DEBUG] Request not found for messageId:", replyToMessageId);
+    log.debug("Request not found for messageId", { messageId: replyToMessageId });
     return;
   }
 
@@ -638,7 +1138,14 @@ export async function processReplyMessage(
   // Note: Don't check timeout here - if user replied, we should accept it
   // The hook will handle timeout on its own
 
-  const customText = message.text.trim();
+  // Sanitize input: strip control characters and ANSI escape sequences
+  // This prevents injection of terminal control sequences
+  const rawText = message.text.trim();
+  const customText = rawText
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // Remove control chars (except \t, \n, \r)
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "") // Remove ANSI escape sequences
+    .replace(/\x1b\][^\x07]*\x07/g, ""); // Remove OSC sequences
 
   // Validate custom text length
   if (customText.length > 1000) {
@@ -656,9 +1163,9 @@ export async function processReplyMessage(
   if (allSessions.length > 0) {
     const targetSession = allSessions[0];
     addKeystrokeTask(targetSession.id, customText, request.id);
-    console.log(`[Telegram] Created custom keystroke task for session ${targetSession.shortId}`);
+    log.info(`Created custom keystroke task for session ${targetSession.shortId}`);
   } else {
-    console.warn(`[Telegram] No active PTY session, custom text keystroke not sent`);
+    log.warn("No active PTY session, custom text keystroke not sent");
     // Notify user that there's no active session
     await callApi("sendMessage", {
       chat_id: CHAT_ID,
@@ -692,20 +1199,20 @@ export async function pollUpdates(): Promise<void> {
     });
 
     if (updates.length > 0) {
-      console.log("[DEBUG] Received updates:", updates.length);
+      log.debug("Received updates", { count: updates.length });
     }
 
     for (const update of updates) {
       lastUpdateId = update.update_id;
 
       if (update.callback_query) {
-        console.log("[DEBUG] Processing callback_query");
+        log.debug("Processing callback_query");
         await processCallback(update.callback_query);
       }
 
       if (update.message) {
-        console.log("[DEBUG] Received message:", update.message.text?.slice(0, 50));
-        console.log("[DEBUG] Is reply:", !!update.message.reply_to_message);
+        log.debug(`Received message: ${update.message.text?.slice(0, 50)}`);
+        log.debug(`Is reply: ${!!update.message.reply_to_message}`);
         if (update.message.reply_to_message) {
           // Reply message → custom input for questions
           await processReplyMessage(update.message);
@@ -722,7 +1229,7 @@ export async function pollUpdates(): Promise<void> {
       }
     }
   } catch (error) {
-    console.error("Telegram polling error:", error);
+    log.error("Telegram polling error", { error: String(error) });
   }
 }
 
@@ -730,7 +1237,7 @@ export async function pollUpdates(): Promise<void> {
  * Start the Telegram polling loop
  */
 export function startPolling(): void {
-  console.log("Starting Telegram polling...");
+  log.info("Starting Telegram polling...");
 
   const poll = async () => {
     while (true) {
@@ -738,7 +1245,7 @@ export function startPolling(): void {
         await pollUpdates();
       } catch (error) {
         // Log error but continue polling
-        console.error("Polling error (will retry):", String(error).slice(0, 100));
+        log.error("Polling error (will retry)", { error: String(error).slice(0, 100) });
         // Wait longer on error (409 conflict needs time to resolve)
         await Bun.sleep(5000);
         continue;
@@ -748,7 +1255,7 @@ export function startPolling(): void {
     }
   };
 
-  poll().catch(console.error);
+  poll().catch((err) => log.error("Poll loop error", { error: String(err) }));
 }
 
 /**
@@ -762,7 +1269,7 @@ export async function sendTestMessage(): Promise<boolean> {
     });
     return true;
   } catch (error) {
-    console.error("Failed to send test message:", error);
+    log.error("Failed to send test message", { error: String(error) });
     return false;
   }
 }
@@ -779,10 +1286,10 @@ export async function setupBotCommands(): Promise<boolean> {
         { command: "sessions", description: "查看所有活跃会话" },
       ],
     });
-    console.log("✓ Bot commands registered");
+    log.info("Bot commands registered");
     return true;
   } catch (error) {
-    console.error("Failed to set bot commands:", error);
+    log.error("Failed to set bot commands", { error: String(error) });
     return false;
   }
 }
@@ -807,25 +1314,39 @@ export async function sendNotification(
     });
     return true;
   } catch (error) {
-    console.error("Failed to send notification:", error);
+    log.error("Failed to send notification", { error: String(error) });
     return false;
   }
 }
 
 /**
- * Clean up expired pending task messages
+ * Clean up expired pending task messages and multi-question states
  */
 export function cleanupPendingTaskMessages(): void {
   const now = Date.now();
-  let cleaned = 0;
+
+  // Clean up pending task messages
+  let tasksCleaned = 0;
   for (const [msgId, task] of pendingTaskMessages) {
     if (now - task.createdAt > PENDING_TASK_TIMEOUT) {
       pendingTaskMessages.delete(msgId);
-      cleaned++;
+      tasksCleaned++;
     }
   }
-  if (cleaned > 0) {
-    console.log(`[Telegram] Cleaned up ${cleaned} expired pending task message(s)`);
+  if (tasksCleaned > 0) {
+    log.info(`Cleaned up ${tasksCleaned} expired pending task message(s)`);
+  }
+
+  // Clean up multi-question states
+  let mquestionsCleaned = 0;
+  for (const [notificationId, state] of multiQuestionStates) {
+    if (now - state.createdAt > MULTI_QUESTION_TIMEOUT) {
+      multiQuestionStates.delete(notificationId);
+      mquestionsCleaned++;
+    }
+  }
+  if (mquestionsCleaned > 0) {
+    log.info(`Cleaned up ${mquestionsCleaned} expired multi-question state(s)`);
   }
 }
 
@@ -1000,9 +1521,9 @@ async function processClaudeCallCommand(message: TelegramMessage): Promise<void>
   // Create directory (mkdir with recursive is idempotent)
   try {
     await mkdir(targetDir, { recursive: true });
-    console.log(`[Telegram] Ensured directory exists: ${targetDir}`);
+    log.info(`Ensured directory exists: ${targetDir}`);
   } catch (error) {
-    console.error(`[Telegram] Failed to create directory:`, error);
+    log.error("Failed to create directory", { error: String(error) });
     await callApi("sendMessage", {
       chat_id: CHAT_ID,
       text: `❌ *目录创建失败*\n\n\`${getErrorMessage(error)}\``,
@@ -1035,9 +1556,9 @@ async function processClaudeCallCommand(message: TelegramMessage): Promise<void>
       stdio: ["ignore", "ignore", "ignore"],
     });
 
-    console.log(`[Telegram] Spawned PTY wrapper (pid: ${proc.pid}) for ${targetDir}`);
+    log.info(`Spawned PTY wrapper (pid: ${proc.pid}) for ${targetDir}`);
   } catch (error) {
-    console.error(`[Telegram] Failed to spawn wrapper:`, error);
+    log.error("Failed to spawn wrapper", { error: String(error) });
     await callApi("editMessageText", {
       chat_id: CHAT_ID,
       message_id: startingMsg.message_id,
@@ -1062,7 +1583,7 @@ async function processClaudeCallCommand(message: TelegramMessage): Promise<void>
     if (proc && proc.pid) {
       try {
         proc.kill();
-        console.log(`[Telegram] Killed orphaned process (pid: ${proc.pid})`);
+        log.info(`Killed orphaned process (pid: ${proc.pid})`);
       } catch {
         // Process may have already exited
       }
@@ -1088,7 +1609,7 @@ export async function processNewTaskMessage(
 
   // Verify it's from the correct chat
   if (String(message.chat.id) !== CHAT_ID) {
-    console.warn("[Telegram] Task message from unauthorized chat:", message.chat.id);
+    log.warn("Task message from unauthorized chat", { chatId: message.chat.id });
     return;
   }
 
@@ -1148,7 +1669,7 @@ export async function processNewTaskMessage(
       parse_mode: "Markdown",
       reply_to_message_id: message.message_id,
     });
-    console.log(`[Telegram] Task sent to ${session.name}: ${task.id.slice(0, 8)}...`);
+    log.info(`Task sent to ${session.name}: ${task.id.slice(0, 8)}...`);
     return;
   }
 
